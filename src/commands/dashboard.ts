@@ -6,13 +6,14 @@
  * SPDX-License-Identifier: EPL-2.0
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as vscode from "vscode";
-import type { ConfigLayer, ZoweConfigProfile } from "../types.js";
+import type { ConfigLayer, ExtensionSettings, ZoweConfigProfile } from "../types.js";
 import { findConfigLayers, isActiveZoweConfig, isZoweConfigFile, loadConfigFile } from "../utils/config-finder.js";
 import { getAllEnvironmentChecks, type EnvironmentCheck } from "../utils/environment-checks.js";
+import { validateDocument } from "../validators/document-validator.js";
 
 let dashboardPanel: vscode.WebviewPanel | undefined;
 
@@ -109,6 +110,57 @@ interface SshKeyInfo {
   path: string;
   type: string;
   hasPublicKey: boolean;
+}
+
+// Get validation settings from VS Code configuration
+function getValidationSettings(): ExtensionSettings {
+  const config = vscode.workspace.getConfiguration("zoweInspector");
+  return {
+    enableRealTimeValidation: config.get("enableRealTimeValidation", true),
+    validateOnSave: config.get("validateOnSave", true),
+    showInfoDiagnostics: config.get("showInfoDiagnostics", false),
+    checkSshKeyExists: config.get("checkSshKeyExists", true),
+  };
+}
+
+// Convert validation issues to VS Code diagnostics (for dashboard display)
+function issuesToDiagnostics(
+  issues: Array<{ message: string; severity: string; code?: string; suggestion?: string; range?: { startLine: number; startChar: number; endLine: number; endChar: number } }>,
+  content: string,
+  settings: ExtensionSettings
+): vscode.Diagnostic[] {
+  const lines = content.split("\n");
+  const diagnostics: vscode.Diagnostic[] = [];
+
+  for (const issue of issues) {
+    if (issue.severity === "info" && !settings.showInfoDiagnostics) {
+      continue;
+    }
+
+    let range: vscode.Range;
+    if (issue.range) {
+      range = new vscode.Range(
+        new vscode.Position(issue.range.startLine, issue.range.startChar),
+        new vscode.Position(issue.range.endLine, issue.range.endChar)
+      );
+    } else {
+      range = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, lines[0]?.length || 0));
+    }
+
+    const severity = issue.severity === "error" 
+      ? vscode.DiagnosticSeverity.Error 
+      : issue.severity === "warning" 
+        ? vscode.DiagnosticSeverity.Warning 
+        : vscode.DiagnosticSeverity.Information;
+
+    const message = issue.suggestion ? `${issue.message}\n💡 ${issue.suggestion}` : issue.message;
+    const diagnostic = new vscode.Diagnostic(range, message, severity);
+    diagnostic.code = issue.code;
+    diagnostic.source = "Zowe Config Inspector";
+    diagnostics.push(diagnostic);
+  }
+
+  return diagnostics;
 }
 
 export async function showDashboard(): Promise<void> {
@@ -923,12 +975,18 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
     inherited: Record<string, { value: unknown; from: string }>;
   }> = [];
   
-  // Collect diagnostics from all existing config layers (not just open documents)
+  // Validate all existing config files directly (don't rely on VS Code diagnostics which clear when files close)
+  const settings = getValidationSettings();
   for (const layer of existingLayers) {
-    const uri = vscode.Uri.file(layer.path);
-    const diagnostics = vscode.languages.getDiagnostics(uri).filter(d => d.source === "Zowe Config Inspector");
-    if (diagnostics.length > 0) {
-      allDiagnostics.push({ file: layer.path, diagnostics });
+    try {
+      const content = readFileSync(layer.path, "utf-8");
+      const issues = validateDocument(content, layer.path, settings);
+      const diagnostics = issuesToDiagnostics(issues, content, settings);
+      if (diagnostics.length > 0) {
+        allDiagnostics.push({ file: layer.path, diagnostics });
+      }
+    } catch (error) {
+      console.error(`Failed to validate ${layer.path}:`, error);
     }
   }
 
