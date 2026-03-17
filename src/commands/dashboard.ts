@@ -10,7 +10,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as vscode from "vscode";
-import type { ConfigLayer, EffectiveProfile, ZoweConfigProfile } from "../types.js";
+import type { ConfigLayer, ZoweConfigProfile } from "../types.js";
 import { findConfigLayers, isActiveZoweConfig, isZoweConfigFile, loadConfigFile } from "../utils/config-finder.js";
 import { getAllEnvironmentChecks, type EnvironmentCheck } from "../utils/environment-checks.js";
 
@@ -123,11 +123,8 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
   highlightProfileName = profileToHighlight;
 
-  const hasOpenConfig = vscode.workspace.textDocuments.some(doc => isActiveZoweConfig(doc.uri.fsPath));
-  
-  if (!hasOpenConfig) {
-    await openAllActiveConfigFiles(workspaceFolder);
-  }
+  // Always open all existing config files so diagnostics are available
+  await openAllActiveConfigFiles(workspaceFolder);
 
   if (profileToHighlight) {
     await openAndHighlightProfile(workspaceFolder, profileToHighlight);
@@ -242,6 +239,14 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
       case "copyPublicKey":
         await copyPublicKeyToClipboard(message.keyPath);
         break;
+        
+      // Layers tab actions
+      case "createConfig":
+        await createConfigFile(message.path);
+        if (dashboardPanel) {
+          updateDashboardContent(dashboardPanel, workspaceFolder, true);
+        }
+        break;
     }
   });
 
@@ -338,23 +343,28 @@ function collectAllProfileNames(profiles: Record<string, ZoweConfigProfile>, pre
 async function openAllActiveConfigFiles(workspaceFolder: string): Promise<void> {
   const layers = findConfigLayers(workspaceFolder);
   const existingLayers = layers.filter(l => l.exists);
-  
+
   if (existingLayers.length === 0) {
     return;
   }
 
+  // Open all existing config files (in background) so diagnostics provider can validate them
+  const openDocs = new Set(vscode.workspace.textDocuments.map(d => d.uri.fsPath));
+  
   for (const layer of existingLayers) {
+    if (openDocs.has(layer.path)) {
+      continue; // Already open
+    }
     try {
-      const doc = await vscode.workspace.openTextDocument(layer.path);
-      if (layer === existingLayers[0]) {
-        await vscode.window.showTextDocument(doc, vscode.ViewColumn.One, false);
-      }
+      // Just open the document - don't show it in editor (preservesFocus doesn't matter here)
+      await vscode.workspace.openTextDocument(layer.path);
     } catch (error) {
       console.error(`Failed to open ${layer.path}:`, error);
     }
   }
 
-  await new Promise(resolve => setTimeout(resolve, 500));
+  // Small delay to let diagnostics provider process the newly opened files
+  await new Promise(resolve => setTimeout(resolve, 300));
 }
 
 async function testProfileConnection(profileName: string, profileType: string, workspaceFolder: string, withAuth: boolean): Promise<void> {
@@ -774,54 +784,44 @@ function getCredentialManagerInfo(): { name: string; status: string; details: st
 
 // ============== Layers Tab Helpers ==============
 
-function resolveEffectiveProfiles(layers: ConfigLayer[]): Map<string, EffectiveProfile> {
-  const effectiveProfiles = new Map<string, EffectiveProfile>();
-  const orderedLayers = layers.filter((l) => l.exists);
-
-  for (const layer of orderedLayers) {
-    const config = loadConfigFile(layer.path);
-    if (!config?.profiles) continue;
-    processProfilesForLayers(config.profiles, layer, effectiveProfiles, "");
-  }
-
-  return effectiveProfiles;
-}
-
-function processProfilesForLayers(
-  profiles: Record<string, ZoweConfigProfile>,
-  layer: ConfigLayer,
-  effectiveProfiles: Map<string, EffectiveProfile>,
-  prefix: string
-): void {
-  for (const [name, profile] of Object.entries(profiles)) {
-    const fullName = prefix ? `${prefix}.${name}` : name;
-
-    let effective = effectiveProfiles.get(fullName);
-    if (!effective) {
-      effective = { name: fullName, type: profile.type || "unknown", source: layer.path, properties: {} };
-      effectiveProfiles.set(fullName, effective);
-    } else {
-      if (!effective.overriddenBy) effective.overriddenBy = [];
-      effective.overriddenBy.push(layer.path);
-    }
-
-    if (profile.properties) {
-      for (const [propName, propValue] of Object.entries(profile.properties)) {
-        const existing = effective.properties[propName];
-        if (existing) {
-          if (!existing.overriddenSources) existing.overriddenSources = [];
-          existing.overriddenSources.push(existing.source);
-          existing.value = propValue;
-          existing.source = layer.path;
-        } else {
-          effective.properties[propName] = { value: propValue, source: layer.path };
-        }
+async function createConfigFile(filePath: string): Promise<void> {
+  const { dirname } = await import("node:path");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  
+  const isUserConfig = filePath.includes(".user.json");
+  const template = isUserConfig
+    ? {
+        $schema: "./zowe.schema.json",
+        profiles: {},
+        defaults: {}
       }
-    }
-
-    if (profile.profiles) {
-      processProfilesForLayers(profile.profiles, layer, effectiveProfiles, fullName);
-    }
+    : {
+        $schema: "./zowe.schema.json",
+        profiles: {
+          example: {
+            type: "zosmf",
+            properties: {
+              host: "your.mainframe.com",
+              port: 443
+            },
+            secure: ["user", "password"]
+          }
+        },
+        defaults: {
+          zosmf: "example"
+        }
+      };
+  
+  try {
+    const dir = dirname(filePath);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(filePath, JSON.stringify(template, null, 2), "utf-8");
+    
+    const doc = await vscode.workspace.openTextDocument(filePath);
+    await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+    vscode.window.showInformationMessage(`Created ${filePath}`);
+  } catch (err) {
+    vscode.window.showErrorMessage(`Failed to create config: ${err}`);
   }
 }
 
@@ -855,12 +855,12 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
     inherited: Record<string, { value: unknown; from: string }>;
   }> = [];
   
-  for (const doc of vscode.workspace.textDocuments) {
-    if (isZoweConfigFile(doc.uri.fsPath)) {
-      const diagnostics = vscode.languages.getDiagnostics(doc.uri).filter(d => d.source === "Zowe Config Inspector");
-      if (diagnostics.length > 0) {
-        allDiagnostics.push({ file: doc.uri.fsPath, diagnostics });
-      }
+  // Collect diagnostics from all existing config layers (not just open documents)
+  for (const layer of existingLayers) {
+    const uri = vscode.Uri.file(layer.path);
+    const diagnostics = vscode.languages.getDiagnostics(uri).filter(d => d.source === "Zowe Config Inspector");
+    if (diagnostics.length > 0) {
+      allDiagnostics.push({ file: layer.path, diagnostics });
     }
   }
 
@@ -880,7 +880,6 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
   let zoweEnvVars: Array<{ name: string; value: string | undefined; description: string; category: string }> = [];
   let sshKeys: SshKeyInfo[] = [];
   let credentialManager = { name: "", status: "", details: "" };
-  let effectiveProfiles = new Map<string, EffectiveProfile>();
 
   // Only load data needed for the current tab
   if (activeTab === "environment" || activeTab === "dashboard") {
@@ -903,10 +902,6 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
     sshKeys = getSshKeyInfo();
     credentialManager = getCredentialManagerInfo();
   }
-  
-  if (activeTab === "layers") {
-    effectiveProfiles = resolveEffectiveProfiles(layers);
-  }
 
   panel.webview.html = generateTabbedDashboardHtml({
     activeTab,
@@ -922,7 +917,6 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
     zoweEnvVars,
     sshKeys,
     credentialManager,
-    effectiveProfiles,
     allLayers: layers,
   });
   
@@ -969,7 +963,6 @@ interface DashboardData {
   zoweEnvVars: Array<{ name: string; value: string | undefined; description: string; category: string }>;
   sshKeys: SshKeyInfo[];
   credentialManager: { name: string; status: string; details: string };
-  effectiveProfiles: Map<string, EffectiveProfile>;
   allLayers: ConfigLayer[];
 }
 
@@ -1229,6 +1222,10 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
       border-radius: 5px;
       background: var(--vscode-editor-inactiveSelectionBackground);
     }
+    .layer.clickable:hover {
+      background: var(--vscode-list-hoverBackground);
+      outline: 1px solid var(--vscode-focusBorder);
+    }
     .layer.missing { opacity: 0.5; }
     .layer-header { display: flex; align-items: center; gap: 10px; }
     .layer-priority { font-weight: bold; min-width: 25px; }
@@ -1277,6 +1274,7 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
     function generateSshKey() { vscode.postMessage({ command: 'generateSshKey' }); }
     function openSshFolder() { vscode.postMessage({ command: 'openSshFolder' }); }
     function copyPublicKey(keyPath) { vscode.postMessage({ command: 'copyPublicKey', keyPath }); }
+    function createConfig(path) { vscode.postMessage({ command: 'createConfig', path }); }
     
     window.addEventListener('load', function() {
       const highlighted = document.getElementById('highlighted-profile');
@@ -1473,34 +1471,26 @@ function generateCredentialsTab(data: DashboardData): string {
 }
 
 function generateLayersTab(data: DashboardData): string {
-  const { allLayers, effectiveProfiles } = data;
+  const { allLayers } = data;
 
   const layersHtml = allLayers.slice().reverse().map((layer, index) => {
     const priority = allLayers.length - index;
     const statusIcon = layer.exists ? "✅" : "⬜";
-    const typeLabel = layer.userConfig ? `${layer.type} user` : layer.type;
+    const typeLabel = layer.userConfig ? `${layer.type} User` : layer.type;
+    const escapedPath = escapeHtml(layer.path.replace(/\\/g, "\\\\"));
+    const clickable = layer.exists ? `onclick="openFile('${escapedPath}', 0, 0)" style="cursor: pointer;"` : "";
 
     return `
-      <div class="layer ${layer.exists ? "" : "missing"}">
+      <div class="layer ${layer.exists ? "clickable" : "missing"}" ${clickable}>
         <div class="layer-header">
           <span class="layer-priority">${priority}.</span>
           <span>${statusIcon}</span>
           <span class="layer-type">${escapeHtml(typeLabel)}</span>
           <span class="layer-status">${layer.exists ? "exists" : "not found"}</span>
+          ${!layer.exists ? `<button class="inline-btn" onclick="event.stopPropagation(); createConfig('${escapedPath}')">Create</button>` : ""}
         </div>
         <div class="layer-path">${escapeHtml(layer.path)}</div>
         ${layer.exists && layer.profiles.length > 0 ? `<div class="layer-profiles">Profiles: ${escapeHtml(layer.profiles.join(", "))}</div>` : ""}
-      </div>
-    `;
-  }).join('');
-
-  const profilesHtml = Array.from(effectiveProfiles.entries()).map(([name, profile]) => {
-    const hasOverrides = profile.overriddenBy && profile.overriddenBy.length > 0;
-    return `
-      <div class="env-item">
-        <span style="font-weight: 600; color: var(--vscode-textLink-foreground);">${escapeHtml(name)}</span>
-        <span style="color: var(--vscode-descriptionForeground);">(${escapeHtml(profile.type)})</span>
-        ${hasOverrides ? `<span style="font-size: 10px; background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 3px;">${profile.overriddenBy!.length} override(s)</span>` : ''}
       </div>
     `;
   }).join('');
@@ -1509,13 +1499,9 @@ function generateLayersTab(data: DashboardData): string {
     <div class="section">
       <div class="section-title">Configuration Layers</div>
       <p style="font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 12px;">
-        Higher layers override lower layers. Project configs take precedence over global configs.
+        Higher layers override lower layers. Project configs take precedence over global configs. Click to open.
       </p>
       ${layersHtml}
-    </div>
-    <div class="section">
-      <div class="section-title">Effective Profiles</div>
-      ${profilesHtml.length > 0 ? profilesHtml : '<div class="no-items">No profiles defined</div>'}
     </div>
   `;
 }

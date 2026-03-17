@@ -88,11 +88,12 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // Cleanup on deactivation
+  // Cleanup on deactivation - include terminal disposal in subscriptions
   context.subscriptions.push({
     dispose: () => {
       diagnosticsProvider.dispose();
       statusBarProvider.dispose();
+      disposeTerminal();
     },
   });
 }
