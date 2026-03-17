@@ -125,12 +125,21 @@ Configure the extension via VS Code settings:
 - Secure properties stored in plaintext
 - UTF-8 BOM detected
 
-### Info (Blue Squiggles, optional)
+### Info (Blue Squiggles)
 
-- Both password and privateKey set
+These are hidden by default. To enable, add this to your VS Code settings:
+
+```json
+{
+  "zoweInspector.showInfoDiagnostics": true
+}
+```
+
+Info diagnostics include:
+- Both password and privateKey set (dual authentication)
 - Localhost as mainframe host
 - No profiles defined
-
+- Possible typos in property names
 
 ## Example
 

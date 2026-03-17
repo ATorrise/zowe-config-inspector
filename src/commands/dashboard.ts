@@ -153,7 +153,7 @@ function issuesToDiagnostics(
         ? vscode.DiagnosticSeverity.Warning 
         : vscode.DiagnosticSeverity.Information;
 
-    const message = issue.suggestion ? `${issue.message}\n💡 ${issue.suggestion}` : issue.message;
+    const message = issue.message;
     const diagnostic = new vscode.Diagnostic(range, message, severity);
     diagnostic.code = issue.code;
     diagnostic.source = "Zowe Config Inspector";

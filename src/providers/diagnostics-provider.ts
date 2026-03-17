@@ -140,9 +140,6 @@ export class ZoweConfigDiagnosticsProvider {
       diagnostic.code = issue.code;
       diagnostic.source = "Zowe Config Inspector";
 
-      if (issue.suggestion) {
-        diagnostic.message = `${issue.message}\n💡 ${issue.suggestion}`;
-      }
 
       diagnostics.push(diagnostic);
     }
