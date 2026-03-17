@@ -9,6 +9,9 @@ on:
     tags:
       - 'v*'  # Only on version tags, NOT on regular commits
 
+permissions:
+  contents: write  # Required for creating releases
+
 jobs:
   build:
     runs-on: ubuntu-latest
