@@ -21,40 +21,32 @@ Hover over any property to see documentation explaining what it does and how to 
 
 ### Inspector Dashboard
 
-Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensive diagnostic view:
+Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensive diagnostic view with tabbed navigation:
 
+**Dashboard Tab:**
 - **Issues Overview** - Clickable errors and warnings that jump to the exact location
 - **Profile Cards** - All your configured profiles with connection test buttons
 - **Connection Testing** - Test SSH and z/OSMF connectivity with latency display
-- **Environment Status** - Node.js version, Zowe CLI version, credential manager status
 - **Inheritance Visualization** - See which properties are inherited from parent profiles
 
-### Layer Visualization
-
-Run `Zowe Inspector: Show Config Layers & Inheritance` to see:
-
-- All active configuration files (global, project, user)
-- Which profiles are defined where
-- Which layer "wins" when there are conflicts
-
-### Credentials & SSH Keys
-
-Run `Zowe Inspector: Credentials & SSH Keys` to:
-
-- View all SSH keys in `~/.ssh`
-- Check credential manager status
-- Copy public keys to clipboard
-- Generate new SSH keys (shows commands in terminal)
-
-### 🔧 Environment Check
-
-Run `Zowe Inspector: Check Environment & Versions` to see:
-
-- Node.js version
-- Zowe CLI version
+**Environment Tab:**
+- Node.js and Zowe CLI versions
 - ZOWE_CLI_HOME location
+- Zowe environment variables - view set variables, add new ones from curated list
 - Installed Zowe-related VS Code extensions
 - Global npm packages
+- Update Zowe CLI and Generate SSH Key buttons
+
+**Credentials Tab:**
+- View all SSH keys in `~/.ssh`
+- Check credential manager status (Windows/macOS/Linux)
+- Copy public keys to clipboard
+- Generate new SSH keys (Ed25519, RSA, ECDSA)
+
+**Layers Tab:**
+- All configuration files (global, project, user) with priority ordering
+- Which profiles are defined where
+- Override detection - see which layer "wins" when there are conflicts
 
 ## Installation
 
@@ -84,18 +76,14 @@ Open the Command Palette (`Ctrl+Shift+P`) and search for:
 | Command | Description |
 |---------|-------------|
 | `Zowe Inspector: Open Dashboard` | Open comprehensive diagnostic dashboard |
-| `Zowe Inspector: Validate Configuration` | Validate the current file and show summary |
-| `Zowe Inspector: Show Config Layers & Inheritance` | View all config files and their precedence |
-| `Zowe Inspector: Credentials & SSH Keys` | View SSH keys and credential manager status |
-| `Zowe Inspector: Check Environment & Versions` | Check Node.js, Zowe CLI, and extension versions |
-| `Zowe Inspector: Generate SSH Key` | Generate a new SSH key pair |
-| `Zowe Inspector: Update Zowe CLI` | Update Zowe CLI to latest version |
+
+All other features (validation, environment check, credentials, SSH key generation, CLI update) are accessible from within the Dashboard tabs.
 
 ### Context Menus
 
-Right-click on any `zowe.config.json` file in:
-- **Editor** - "Validate Configuration" and "Show Layers" options
-- **Explorer** - "Validate Configuration" and "Open Dashboard" options
+Right-click on any `zowe.config.json` file in the Editor or Explorer to open the Dashboard.
+
+Right-click on a profile/session node in Zowe Explorer's Data Sets, USS, or Jobs tree to select "Inspect Profile" (not available on favorites).
 
 ### Settings
 
@@ -144,26 +132,6 @@ Configure the extension via VS Code settings:
 - Localhost as mainframe host
 - No profiles defined
 
-## Dashboard Features
-
-The Inspector Dashboard provides an interactive diagnostic experience:
-
-### Issues Section
-- All validation errors and warnings grouped by file
-- Click any issue to jump directly to that line in the editor
-- Shows line numbers and detailed suggestions
-
-### Profiles Section
-- Visual cards for each profile showing type and source file
-- **Test Connection** button for SSH and z/OSMF profiles
-- Real-time connection status with latency measurement
-- Collapsible "Inherited Properties" showing what comes from parent profiles
-
-### Environment Section
-- Zowe CLI version and installation status
-- Node.js version
-- ZOWE_CLI_HOME environment variable
-- Credential manager availability
 
 ## Example
 

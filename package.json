@@ -4,7 +4,6 @@
   "description": "Diagnostic tool for Zowe CLI - validate configurations, analyze inheritance, check credentials, test connections, and troubleshoot your mainframe development environment",
   "version": "0.1.0",
   "publisher": "ATorrise",
-  "icon": "resources/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/ATorrise/zowe-config-inspector.git"
@@ -44,32 +43,32 @@
       },
       {
         "command": "zoweInspector.checkConfig",
-        "title": "Zowe Inspector: Validate Configuration",
+        "title": "Validate Configuration",
         "icon": "$(check)"
       },
       {
         "command": "zoweInspector.showLayers",
-        "title": "Zowe Inspector: Show Config Layers & Inheritance",
+        "title": "Show Config Layers",
         "icon": "$(layers)"
       },
       {
         "command": "zoweInspector.showCredentials",
-        "title": "Zowe Inspector: Credentials & SSH Keys",
+        "title": "Credentials & SSH Keys",
         "icon": "$(key)"
       },
       {
         "command": "zoweInspector.checkEnvironment",
-        "title": "Zowe Inspector: Check Environment & Versions",
+        "title": "Check Environment",
         "icon": "$(versions)"
       },
       {
         "command": "zoweInspector.generateSshKey",
-        "title": "Zowe Inspector: Generate SSH Key",
+        "title": "Generate SSH Key",
         "icon": "$(add)"
       },
       {
         "command": "zoweInspector.updateCli",
-        "title": "Zowe Inspector: Update Zowe CLI",
+        "title": "Update Zowe CLI",
         "icon": "$(cloud-download)"
       },
       {
@@ -79,16 +78,44 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "zoweInspector.showDashboard"
+        },
+        {
+          "command": "zoweInspector.checkConfig",
+          "when": "false"
+        },
+        {
+          "command": "zoweInspector.showLayers",
+          "when": "false"
+        },
+        {
+          "command": "zoweInspector.showCredentials",
+          "when": "false"
+        },
+        {
+          "command": "zoweInspector.checkEnvironment",
+          "when": "false"
+        },
+        {
+          "command": "zoweInspector.generateSshKey",
+          "when": "false"
+        },
+        {
+          "command": "zoweInspector.updateCli",
+          "when": "false"
+        },
+        {
+          "command": "zoweInspector.validateProfile",
+          "when": "false"
+        }
+      ],
       "editor/context": [
         {
           "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
-          "command": "zoweInspector.checkConfig",
+          "command": "zoweInspector.showDashboard",
           "group": "1_zoweInspector@1"
-        },
-        {
-          "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
-          "command": "zoweInspector.showLayers",
-          "group": "1_zoweInspector@2"
         }
       ],
       "editor/title": [
@@ -101,19 +128,14 @@
       "explorer/context": [
         {
           "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
-          "command": "zoweInspector.checkConfig",
-          "group": "1_zoweInspector@1"
-        },
-        {
-          "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
           "command": "zoweInspector.showDashboard",
-          "group": "1_zoweInspector@2"
+          "group": "1_zoweInspector@1"
         }
       ],
       "view/item/context": [
         {
           "command": "zoweInspector.validateProfile",
-          "when": "view =~ /^zowe\\.(ds|uss|jobs)\\.explorer/",
+          "when": "view =~ /^zowe\\.(ds|uss|jobs)\\.explorer/ && viewItem =~ /^(session|server|ussSession)/ && viewItem !~ /_fav/",
           "group": "6_zowe_inspector@99"
         }
       ]

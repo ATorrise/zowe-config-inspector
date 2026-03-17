@@ -7,10 +7,7 @@
  */
 
 import * as vscode from "vscode";
-import { showLayers } from "./commands/layers.js";
 import { showDashboard, showDashboardForProfile } from "./commands/dashboard.js";
-import { showCredentials, generateSshKey } from "./commands/credentials.js";
-import { checkEnvironment, updateZoweCli } from "./commands/environment.js";
 import { ZoweConfigDiagnosticsProvider } from "./providers/diagnostics-provider.js";
 import { registerHoverProvider } from "./providers/hover-provider.js";
 import { StatusBarProvider } from "./providers/status-bar-provider.js";
@@ -32,16 +29,16 @@ export function activate(context: vscode.ExtensionContext): void {
   // Register hover provider for tooltips
   registerHoverProvider(context);
 
-  // Register commands
+  // Main command - opens the unified dashboard
   context.subscriptions.push(
     vscode.commands.registerCommand("zoweInspector.showDashboard", () => {
       showDashboard();
     })
   );
 
+  // Legacy commands - all now redirect to dashboard (hidden from command palette)
   context.subscriptions.push(
     vscode.commands.registerCommand("zoweInspector.checkConfig", () => {
-      // Trigger validation on current file and show dashboard
       const editor = vscode.window.activeTextEditor;
       if (editor) {
         diagnosticsProvider.validateDocumentImmediate(editor.document);
@@ -51,33 +48,23 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("zoweInspector.showLayers", () => {
-      showLayers();
-    })
+    vscode.commands.registerCommand("zoweInspector.showLayers", () => showDashboard())
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("zoweInspector.showCredentials", () => {
-      showCredentials();
-    })
+    vscode.commands.registerCommand("zoweInspector.showCredentials", () => showDashboard())
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("zoweInspector.checkEnvironment", () => {
-      checkEnvironment();
-    })
+    vscode.commands.registerCommand("zoweInspector.checkEnvironment", () => showDashboard())
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("zoweInspector.generateSshKey", () => {
-      generateSshKey();
-    })
+    vscode.commands.registerCommand("zoweInspector.generateSshKey", () => showDashboard())
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("zoweInspector.updateCli", () => {
-      updateZoweCli();
-    })
+    vscode.commands.registerCommand("zoweInspector.updateCli", () => showDashboard())
   );
 
   // Command for Zowe Explorer tree view context menu

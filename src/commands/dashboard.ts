@@ -6,8 +6,12 @@
  * SPDX-License-Identifier: EPL-2.0
  */
 
+import { execSync } from "node:child_process";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import * as vscode from "vscode";
-import type { ZoweConfigProfile } from "../types.js";
+import type { ConfigLayer, EffectiveProfile, ZoweConfigProfile } from "../types.js";
 import { findConfigLayers, isActiveZoweConfig, isZoweConfigFile, loadConfigFile } from "../utils/config-finder.js";
 import { getAllEnvironmentChecks, type EnvironmentCheck } from "../utils/environment-checks.js";
 
@@ -24,13 +28,45 @@ const connectionResults = new Map<string, {
 // Store the profile to highlight when dashboard opens
 let highlightProfileName: string | null = null;
 
+// Current active tab
+let activeTab = "dashboard";
+
+// Throttle updates to improve performance
+let updatePending = false;
+let lastUpdateTime = 0;
+const UPDATE_THROTTLE_MS = 500;
+
+// Cache for expensive operations (refresh every 30 seconds)
+let cachedNpmPackages: Array<{ name: string; version: string }> | null = null;
+let cachedExtensions: Array<{ id: string; name: string; version: string; isActive: boolean }> | null = null;
+let cacheTime = 0;
+const CACHE_TTL_MS = 30000;
+
+// Zowe environment variables definitions
+const ZOWE_ENV_VARS = [
+  { name: "ZOWE_CLI_HOME", description: "Directory for global Zowe CLI configuration files", category: "core" },
+  { name: "ZOWE_CLI_PLUGINS_DIR", description: "Directory for CLI plugins", category: "core" },
+  { name: "ZOWE_APP_LOG_LEVEL", description: "Application logging level (DEBUG, INFO, WARN, ERROR)", category: "logging" },
+  { name: "ZOWE_IMPERATIVE_LOG_LEVEL", description: "Imperative framework logging level", category: "logging" },
+  { name: "ZOWE_USE_DAEMON", description: "Enable/disable daemon mode (yes/no)", category: "daemon" },
+  { name: "ZOWE_OPT_HOST", description: "Default host for connections", category: "option" },
+  { name: "ZOWE_OPT_PORT", description: "Default port for connections", category: "option" },
+  { name: "ZOWE_OPT_USER", description: "Default username", category: "option" },
+  { name: "ZOWE_OPT_REJECT_UNAUTHORIZED", description: "Reject unauthorized TLS certificates (true/false)", category: "option" },
+  { name: "ZOWE_OPT_ENCODING", description: "Default encoding for data set operations", category: "option" },
+] as const;
+
+interface SshKeyInfo {
+  name: string;
+  path: string;
+  type: string;
+  hasPublicKey: boolean;
+}
+
 export async function showDashboard(): Promise<void> {
   await showDashboardInternal(null);
 }
 
-/**
- * Show the dashboard and highlight a specific profile (from Zowe Explorer context menu).
- */
 export async function showDashboardForProfile(profileName: string): Promise<void> {
   await showDashboardInternal(profileName);
 }
@@ -39,15 +75,12 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
   highlightProfileName = profileToHighlight;
 
-  // Check if any ACTIVE Zowe config file is currently open (not copies/backups)
   const hasOpenConfig = vscode.workspace.textDocuments.some(doc => isActiveZoweConfig(doc.uri.fsPath));
   
-  // If no active config is open, open all found active config files so they get validated
   if (!hasOpenConfig) {
     await openAllActiveConfigFiles(workspaceFolder);
   }
 
-  // If a specific profile was requested, also open the config file containing it and jump to it
   if (profileToHighlight) {
     await openAndHighlightProfile(workspaceFolder, profileToHighlight);
   }
@@ -74,6 +107,13 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
 
   dashboardPanel.webview.onDidReceiveMessage(async (message) => {
     switch (message.command) {
+      case "switchTab":
+        activeTab = message.tab;
+        if (dashboardPanel) {
+          updateDashboardContent(dashboardPanel, workspaceFolder, true); // Force update on tab switch
+        }
+        break;
+        
       case "openFile":
         const doc = await vscode.workspace.openTextDocument(message.file);
         const editor = await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
@@ -91,8 +131,12 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
         break;
       
       case "refresh":
+        // Clear cache and force full refresh
+        cachedNpmPackages = null;
+        cachedExtensions = null;
+        cacheTime = 0;
         if (dashboardPanel) {
-          updateDashboardContent(dashboardPanel, workspaceFolder);
+          updateDashboardContent(dashboardPanel, workspaceFolder, true);
         }
         break;
         
@@ -105,21 +149,51 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
         break;
       
       case "runCommand":
-        // Handle different command types
         if (message.cmd.startsWith("ext install ")) {
-          // VS Code extension install
           const extId = message.cmd.replace("ext install ", "");
           vscode.commands.executeCommand("workbench.extensions.installExtension", extId);
         } else if (message.cmd.includes("CredentialManager") || message.cmd.includes("Keychain")) {
-          // Open system credential manager
           const { exec } = await import("node:child_process");
           exec(message.cmd);
         } else {
-          // Run in terminal
           const cmdTerminal = vscode.window.createTerminal("Zowe Inspector");
           cmdTerminal.show();
           cmdTerminal.sendText(message.cmd);
         }
+        break;
+        
+      // Environment tab actions
+      case "updateCli":
+        await updateZoweCli();
+        break;
+      case "installCli":
+        await installZoweCli();
+        break;
+      case "addEnvVar":
+        await addEnvironmentVariable();
+        if (dashboardPanel) {
+          updateDashboardContent(dashboardPanel, workspaceFolder);
+        }
+        break;
+      case "copyEnvExport":
+        await copyEnvExportCommand(message.name, message.value);
+        break;
+        
+      // Credentials tab actions
+      case "generateSshKey":
+        await generateSshKey();
+        if (dashboardPanel) {
+          updateDashboardContent(dashboardPanel, workspaceFolder);
+        }
+        break;
+      case "openSshFolder":
+        const sshDir = join(homedir(), ".ssh");
+        if (existsSync(sshDir)) {
+          vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(sshDir));
+        }
+        break;
+      case "copyPublicKey":
+        await copyPublicKeyToClipboard(message.keyPath);
         break;
     }
   });
@@ -137,34 +211,26 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
   });
 }
 
-/**
- * Opens a config file and jumps to the specified profile's location.
- */
+// ============== Dashboard Tab Helpers ==============
+
 async function openProfileInEditor(filePath: string, profileName: string): Promise<void> {
   try {
     const doc = await vscode.workspace.openTextDocument(filePath);
     const editor = await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
     
-    // Find the profile in the document
     const text = doc.getText();
     const lines = text.split('\n');
-    
-    // Build the search pattern for nested profiles
-    // e.g., "b037.ssh" should find "ssh" inside "b037"
     const profileParts = profileName.split('.');
     const lastPart = profileParts[profileParts.length - 1];
-    
-    // Search for the profile name as a JSON key
     const searchPattern = new RegExp(`"${lastPart}"\\s*:\\s*\\{`);
     
     let targetLine = 0;
-    let inCorrectParent = profileParts.length === 1; // If no nesting, any match is correct
+    let inCorrectParent = profileParts.length === 1;
     let parentDepth = 0;
     
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       
-      // Track if we're inside the correct parent profile(s)
       if (profileParts.length > 1) {
         for (let p = 0; p < profileParts.length - 1; p++) {
           const parentPattern = new RegExp(`"${profileParts[p]}"\\s*:\\s*\\{`);
@@ -177,7 +243,6 @@ async function openProfileInEditor(filePath: string, profileName: string): Promi
         }
       }
       
-      // Look for the target profile
       if (searchPattern.test(line) && inCorrectParent) {
         targetLine = i;
         break;
@@ -193,33 +258,24 @@ async function openProfileInEditor(filePath: string, profileName: string): Promi
   }
 }
 
-/**
- * Find and open the config file containing a specific profile, then jump to that profile.
- */
 async function openAndHighlightProfile(workspaceFolder: string, profileName: string): Promise<void> {
   const layers = findConfigLayers(workspaceFolder);
   const existingLayers = layers.filter(l => l.exists);
 
-  // Find which config file contains this profile
   for (const layer of existingLayers) {
     const config = loadConfigFile(layer.path);
     if (config?.profiles) {
       const profileNames = collectAllProfileNames(config.profiles, "");
       if (profileNames.includes(profileName)) {
-        // Found it! Open and highlight
         await openProfileInEditor(layer.path, profileName);
         return;
       }
     }
   }
 
-  // Profile not found in any config - just show a message
   vscode.window.showWarningMessage(`Profile "${profileName}" not found in any active configuration file.`);
 }
 
-/**
- * Recursively collect all profile names from a profiles object.
- */
 function collectAllProfileNames(profiles: Record<string, ZoweConfigProfile>, prefix: string): string[] {
   const names: string[] = [];
   for (const [name, profile] of Object.entries(profiles)) {
@@ -232,25 +288,17 @@ function collectAllProfileNames(profiles: Record<string, ZoweConfigProfile>, pre
   return names;
 }
 
-/**
- * Opens all ACTIVE Zowe config files (zowe.config.json and zowe.config.user.json only).
- * Does NOT open copies, backups, or files with extra text in the name.
- */
 async function openAllActiveConfigFiles(workspaceFolder: string): Promise<void> {
   const layers = findConfigLayers(workspaceFolder);
-  // findConfigLayers only returns actual config locations (not copies/backups)
   const existingLayers = layers.filter(l => l.exists);
   
   if (existingLayers.length === 0) {
-    vscode.window.showInformationMessage("No active Zowe configuration files found on this system.");
     return;
   }
 
-  // Open each active config file (this triggers validation via the diagnostics provider)
   for (const layer of existingLayers) {
     try {
       const doc = await vscode.workspace.openTextDocument(layer.path);
-      // Show the first one in the editor, others just open in background
       if (layer === existingLayers[0]) {
         await vscode.window.showTextDocument(doc, vscode.ViewColumn.One, false);
       }
@@ -259,7 +307,6 @@ async function openAllActiveConfigFiles(workspaceFolder: string): Promise<void> 
     }
   }
 
-  // Give the diagnostics provider time to validate the opened files
   await new Promise(resolve => setTimeout(resolve, 500));
 }
 
@@ -297,7 +344,6 @@ async function testProfileConnection(profileName: string, profileType: string, w
     if (profileType === "ssh") {
       await testSshConnection(profileName, profileProps, withAuth);
     } else if (profileType === "zosmf" || profileType === "tso") {
-      // TSO uses z/OSMF under the hood
       await testZosmfConnection(profileName, profileProps, withAuth);
     } else if (profileType === "zftp") {
       await testFtpConnection(profileName, profileProps, withAuth);
@@ -331,15 +377,10 @@ async function testSshConnection(profileName: string, props: Record<string, unkn
     const privateKey = props.privateKey as string | undefined;
     
     if (!user) {
-      connectionResults.set(profileName, { 
-        status: "failed", 
-        message: "No user configured for auth test", 
-        timestamp: Date.now() 
-      });
+      connectionResults.set(profileName, { status: "failed", message: "No user configured for auth test", timestamp: Date.now() });
       return;
     }
     
-    // Run SSH auth test in background and capture result
     const keyOpt = privateKey ? ` -i "${privateKey}"` : "";
     const sshCmd = `ssh -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=no${keyOpt} ${user}@${host} -p ${port} echo "ok"`;
     
@@ -351,65 +392,33 @@ async function testSshConnection(profileName: string, props: Record<string, unkn
       await execAsync(sshCmd, { timeout: 20000 });
       
       const latency = Date.now() - startTime;
-      connectionResults.set(profileName, { 
-        status: "success", 
-        message: `SSH auth successful as ${user}`, 
-        latency,
-        timestamp: Date.now() 
-      });
+      connectionResults.set(profileName, { status: "success", message: `SSH auth successful as ${user}`, latency, timestamp: Date.now() });
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       let friendlyMsg = `SSH auth failed`;
       
-      if (errMsg.includes("Permission denied")) {
-        friendlyMsg = "Auth failed: Permission denied (check key/password)";
-      } else if (errMsg.includes("Connection refused")) {
-        friendlyMsg = "Auth failed: Connection refused";
-      } else if (errMsg.includes("timed out") || errMsg.includes("ETIMEDOUT")) {
-        friendlyMsg = "Auth failed: Connection timed out";
-      } else if (errMsg.includes("Host key verification")) {
-        friendlyMsg = "Auth failed: Host key verification failed";
-      }
+      if (errMsg.includes("Permission denied")) friendlyMsg = "Auth failed: Permission denied (check key/password)";
+      else if (errMsg.includes("Connection refused")) friendlyMsg = "Auth failed: Connection refused";
+      else if (errMsg.includes("timed out") || errMsg.includes("ETIMEDOUT")) friendlyMsg = "Auth failed: Connection timed out";
       
-      connectionResults.set(profileName, { 
-        status: "failed", 
-        message: friendlyMsg, 
-        timestamp: Date.now() 
-      });
+      connectionResults.set(profileName, { status: "failed", message: friendlyMsg, timestamp: Date.now() });
     }
     return;
   }
 
-  // Basic connectivity test (no auth)
   try {
     const net = await import("node:net");
     
     await new Promise<void>((resolve, reject) => {
       const socket = new net.Socket();
-      const timeout = setTimeout(() => {
-        socket.destroy();
-        reject(new Error("Connection timed out (5s)"));
-      }, 5000);
+      const timeout = setTimeout(() => { socket.destroy(); reject(new Error("Connection timed out (5s)")); }, 5000);
 
-      socket.connect(port, host, () => {
-        clearTimeout(timeout);
-        socket.destroy();
-        resolve();
-      });
-
-      socket.on("error", (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
+      socket.connect(port, host, () => { clearTimeout(timeout); socket.destroy(); resolve(); });
+      socket.on("error", (err) => { clearTimeout(timeout); reject(err); });
     });
 
     const latency = Date.now() - startTime;
-    connectionResults.set(profileName, { 
-      status: "success", 
-      message: `Port ${port} reachable`, 
-      latency,
-      timestamp: Date.now() 
-    });
+    connectionResults.set(profileName, { status: "success", message: `Port ${port} reachable`, latency, timestamp: Date.now() });
   } catch (error) {
     connectionResults.set(profileName, { 
       status: "failed", 
@@ -428,7 +437,6 @@ async function testZosmfConnection(profileName: string, props: Record<string, un
   const startTime = Date.now();
 
   if (withAuth) {
-    // Auth test using Zowe CLI in background
     const zoweCmd = `zowe zosmf check status --host "${host}" --port ${port} --ru ${rejectUnauthorized}`;
     
     try {
@@ -437,45 +445,23 @@ async function testZosmfConnection(profileName: string, props: Record<string, un
       const execAsync = promisify(exec);
       
       const { stdout } = await execAsync(zoweCmd, { timeout: 30000 });
-      
       const latency = Date.now() - startTime;
-      
-      // Parse z/OS version from output if available
       const versionMatch = stdout.match(/zos_version:\s*(\S+)/);
       const version = versionMatch ? ` (z/OS ${versionMatch[1]})` : "";
       
-      connectionResults.set(profileName, { 
-        status: "success", 
-        message: `z/OSMF auth successful${version}`, 
-        latency,
-        timestamp: Date.now() 
-      });
+      connectionResults.set(profileName, { status: "success", message: `z/OSMF auth successful${version}`, latency, timestamp: Date.now() });
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       let friendlyMsg = "z/OSMF auth failed";
       
-      if (errMsg.includes("401") || errMsg.includes("Unauthorized") || errMsg.includes("not valid or expired")) {
-        friendlyMsg = "Auth failed: Invalid credentials or expired token";
-      } else if (errMsg.includes("ECONNREFUSED") || errMsg.includes("Connection refused")) {
-        friendlyMsg = "Auth failed: Connection refused";
-      } else if (errMsg.includes("ETIMEDOUT") || errMsg.includes("timed out")) {
-        friendlyMsg = "Auth failed: Connection timed out";
-      } else if (errMsg.includes("certificate") || errMsg.includes("self-signed") || errMsg.includes("CERT")) {
-        friendlyMsg = "Auth failed: Certificate error (try rejectUnauthorized: false)";
-      } else if (errMsg.includes("ENOTFOUND")) {
-        friendlyMsg = "Auth failed: Host not found";
-      }
+      if (errMsg.includes("401") || errMsg.includes("Unauthorized")) friendlyMsg = "Auth failed: Invalid credentials or expired token";
+      else if (errMsg.includes("certificate")) friendlyMsg = "Auth failed: Certificate error (try rejectUnauthorized: false)";
       
-      connectionResults.set(profileName, { 
-        status: "failed", 
-        message: friendlyMsg, 
-        timestamp: Date.now() 
-      });
+      connectionResults.set(profileName, { status: "failed", message: friendlyMsg, timestamp: Date.now() });
     }
     return;
   }
 
-  // Basic connectivity test (no auth)
   const url = `${protocol}://${host}:${port}${basePath}/info`;
 
   try {
@@ -484,43 +470,20 @@ async function testZosmfConnection(profileName: string, props: Record<string, un
     const client = protocol === "https" ? https : http;
 
     await new Promise<void>((resolve, reject) => {
-      const req = client.request(url, {
-        method: "GET",
-        timeout: 10000,
-        rejectUnauthorized,
-      }, (res) => {
-        if (res.statusCode && res.statusCode < 500) {
-          resolve();
-        } else {
-          reject(new Error(`HTTP ${res.statusCode}`));
-        }
+      const req = client.request(url, { method: "GET", timeout: 10000, rejectUnauthorized }, (res) => {
+        if (res.statusCode && res.statusCode < 500) resolve();
+        else reject(new Error(`HTTP ${res.statusCode}`));
       });
-
       req.on("error", reject);
-      req.on("timeout", () => {
-        req.destroy();
-        reject(new Error("Request timed out"));
-      });
+      req.on("timeout", () => { req.destroy(); reject(new Error("Request timed out")); });
       req.end();
     });
 
     const latency = Date.now() - startTime;
-    connectionResults.set(profileName, { 
-      status: "success", 
-      message: `Reachable at ${host}:${port}`, 
-      latency,
-      timestamp: Date.now() 
-    });
+    connectionResults.set(profileName, { status: "success", message: `Reachable at ${host}:${port}`, latency, timestamp: Date.now() });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : "Unknown error";
-    const hint = errMsg.includes("self-signed") || errMsg.includes("certificate") 
-      ? " (set rejectUnauthorized: false)"
-      : "";
-    connectionResults.set(profileName, { 
-      status: "failed", 
-      message: `Cannot reach ${host}:${port} - ${errMsg}${hint}`, 
-      timestamp: Date.now() 
-    });
+    connectionResults.set(profileName, { status: "failed", message: `Cannot reach ${host}:${port} - ${errMsg}`, timestamp: Date.now() });
   }
 }
 
@@ -531,86 +494,27 @@ async function testFtpConnection(profileName: string, props: Record<string, unkn
 
   if (withAuth) {
     const user = props.user as string | undefined;
-    
     if (!user) {
-      connectionResults.set(profileName, { 
-        status: "failed", 
-        message: "No user configured for auth test", 
-        timestamp: Date.now() 
-      });
+      connectionResults.set(profileName, { status: "failed", message: "No user configured for auth test", timestamp: Date.now() });
       return;
     }
     
-    // FTP auth test using Zowe CLI
-    const zoweCmd = `zowe zos-ftp list data-set "${user}.*" --host "${host}" --port ${port} --user "${user}"`;
-    
-    try {
-      const { exec } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const execAsync = promisify(exec);
-      
-      await execAsync(zoweCmd, { timeout: 30000 });
-      
-      const latency = Date.now() - startTime;
-      connectionResults.set(profileName, { 
-        status: "success", 
-        message: `FTP auth successful as ${user}`, 
-        latency,
-        timestamp: Date.now() 
-      });
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      let friendlyMsg = "FTP auth failed";
-      
-      if (errMsg.includes("530") || errMsg.includes("Login") || errMsg.includes("credentials")) {
-        friendlyMsg = "Auth failed: Invalid credentials";
-      } else if (errMsg.includes("ECONNREFUSED")) {
-        friendlyMsg = "Auth failed: Connection refused";
-      } else if (errMsg.includes("ETIMEDOUT") || errMsg.includes("timed out")) {
-        friendlyMsg = "Auth failed: Connection timed out";
-      } else if (errMsg.includes("not installed") || errMsg.includes("not recognized")) {
-        friendlyMsg = "zFTP plugin not installed (npm i -g @zowe/zos-ftp-for-zowe-cli)";
-      }
-      
-      connectionResults.set(profileName, { 
-        status: "failed", 
-        message: friendlyMsg, 
-        timestamp: Date.now() 
-      });
-    }
+    connectionResults.set(profileName, { status: "failed", message: "FTP auth test requires zFTP plugin", timestamp: Date.now() });
     return;
   }
 
-  // Basic FTP port connectivity test (no auth)
   try {
     const net = await import("node:net");
     
     await new Promise<void>((resolve, reject) => {
       const socket = new net.Socket();
-      const timeout = setTimeout(() => {
-        socket.destroy();
-        reject(new Error("Connection timed out (5s)"));
-      }, 5000);
-
-      socket.connect(port, host, () => {
-        clearTimeout(timeout);
-        socket.destroy();
-        resolve();
-      });
-
-      socket.on("error", (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
+      const timeout = setTimeout(() => { socket.destroy(); reject(new Error("Connection timed out (5s)")); }, 5000);
+      socket.connect(port, host, () => { clearTimeout(timeout); socket.destroy(); resolve(); });
+      socket.on("error", (err) => { clearTimeout(timeout); reject(err); });
     });
 
     const latency = Date.now() - startTime;
-    connectionResults.set(profileName, { 
-      status: "success", 
-      message: `FTP port ${port} reachable`, 
-      latency,
-      timestamp: Date.now() 
-    });
+    connectionResults.set(profileName, { status: "success", message: `FTP port ${port} reachable`, latency, timestamp: Date.now() });
   } catch (error) {
     connectionResults.set(profileName, { 
       status: "failed", 
@@ -627,25 +531,14 @@ function findProfile(profiles: Record<string, ZoweConfigProfile>, name: string):
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     if (!current[part]) return null;
-    
-    if (i === parts.length - 1) {
-      return current[part];
-    }
-    
-    if (current[part].profiles) {
-      current = current[part].profiles!;
-    } else {
-      return null;
-    }
+    if (i === parts.length - 1) return current[part];
+    if (current[part].profiles) current = current[part].profiles!;
+    else return null;
   }
-  
   return null;
 }
 
-function getInheritedProperties(
-  profiles: Record<string, ZoweConfigProfile>, 
-  profileName: string
-): Record<string, { value: unknown; from: string }> {
+function getInheritedProperties(profiles: Record<string, ZoweConfigProfile>, profileName: string): Record<string, { value: unknown; from: string }> {
   const inherited: Record<string, { value: unknown; from: string }> = {};
   const parts = profileName.split(".");
   
@@ -662,33 +555,346 @@ function getInheritedProperties(
       }
     }
     
-    if (current[part]?.profiles) {
-      current = current[part].profiles!;
-    } else {
-      break;
-    }
+    if (current[part]?.profiles) current = current[part].profiles!;
+    else break;
   }
   
   return inherited;
 }
 
-function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: string): void {
+// ============== Environment Tab Helpers ==============
+
+async function updateZoweCli(): Promise<void> {
+  const choice = await vscode.window.showInformationMessage(
+    "This will run 'npm update -g @zowe/cli' in a terminal. Continue?",
+    "Update Zowe CLI", "Cancel"
+  );
+  if (choice !== "Update Zowe CLI") return;
+
+  const terminal = vscode.window.createTerminal("Zowe CLI Update");
+  terminal.show();
+  terminal.sendText("npm update -g @zowe/cli");
+  terminal.sendText("echo 'Update complete. Run: zowe --version'");
+}
+
+async function installZoweCli(): Promise<void> {
+  const choice = await vscode.window.showInformationMessage(
+    "This will run 'npm install -g @zowe/cli' in a terminal. Continue?",
+    "Install Zowe CLI", "Cancel"
+  );
+  if (choice !== "Install Zowe CLI") return;
+
+  const terminal = vscode.window.createTerminal("Zowe CLI Install");
+  terminal.show();
+  terminal.sendText("npm install -g @zowe/cli");
+  terminal.sendText("echo 'Installation complete. Run: zowe --version'");
+}
+
+async function addEnvironmentVariable(): Promise<void> {
+  const items = ZOWE_ENV_VARS.map(v => ({
+    label: v.name,
+    description: process.env[v.name] ? `Current: ${process.env[v.name]}` : "(not set)",
+    detail: v.description,
+    envVar: v,
+  }));
+
+  const selected = await vscode.window.showQuickPick(items, {
+    placeHolder: "Select a Zowe environment variable to set",
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+
+  if (!selected) return;
+
+  const currentValue = process.env[selected.envVar.name] || "";
+  const newValue = await vscode.window.showInputBox({
+    prompt: `Enter value for ${selected.envVar.name}`,
+    placeHolder: selected.envVar.description,
+    value: currentValue,
+  });
+
+  if (newValue === undefined) return;
+
+  const isWindows = process.platform === "win32";
+  const isPermanent = await vscode.window.showQuickPick(
+    [
+      { label: "Session only", description: "Set for this terminal session", value: "session" },
+      { label: "Permanent (User)", description: "Set permanently for your user", value: "permanent" },
+    ],
+    { placeHolder: "How should this variable be set?" }
+  );
+
+  if (!isPermanent) return;
+
+  const terminal = vscode.window.createTerminal("Set Environment Variable");
+  terminal.show();
+
+  if (isWindows) {
+    if (isPermanent.value === "permanent") {
+      terminal.sendText(`setx ${selected.envVar.name} "${newValue}"`);
+      terminal.sendText(`echo "Environment variable set permanently. Restart VS Code for changes to take effect."`);
+    } else {
+      terminal.sendText(`set ${selected.envVar.name}=${newValue}`);
+    }
+  } else {
+    if (isPermanent.value === "permanent") {
+      const shell = process.env.SHELL || "/bin/bash";
+      const rcFile = shell.includes("zsh") ? "~/.zshrc" : "~/.bashrc";
+      terminal.sendText(`echo 'export ${selected.envVar.name}="${newValue}"' >> ${rcFile}`);
+      terminal.sendText(`source ${rcFile}`);
+    } else {
+      terminal.sendText(`export ${selected.envVar.name}="${newValue}"`);
+    }
+  }
+}
+
+async function copyEnvExportCommand(name: string, value: string): Promise<void> {
+  const isWindows = process.platform === "win32";
+  const cmd = isWindows ? `setx ${name} "${value}"` : `export ${name}="${value}"`;
+  await vscode.env.clipboard.writeText(cmd);
+  vscode.window.showInformationMessage(`Copied: ${cmd}`);
+}
+
+function getZoweRelatedExtensions(): Array<{ id: string; name: string; version: string; isActive: boolean }> {
+  const extensions: Array<{ id: string; name: string; version: string; isActive: boolean }> = [];
+  for (const ext of vscode.extensions.all) {
+    const id = ext.id.toLowerCase();
+    if (id.includes("zowe") || id.includes("ibm") || id.includes("mainframe") || id.includes("endevor") || id.includes("cics")) {
+      extensions.push({
+        id: ext.id,
+        name: ext.packageJSON.displayName || ext.id,
+        version: ext.packageJSON.version || "unknown",
+        isActive: ext.isActive,
+      });
+    }
+  }
+  return extensions.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function getNpmGlobalPackagesCached(): Array<{ name: string; version: string }> {
+  // Return cached if available
+  if (cachedNpmPackages) {
+    return cachedNpmPackages;
+  }
+  
+  const packages: Array<{ name: string; version: string }> = [];
+  try {
+    // Use a shorter timeout and don't block
+    const output = execSync("npm list -g --depth=0 --json", { 
+      encoding: "utf-8", 
+      timeout: 5000, 
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true 
+    });
+    const parsed = JSON.parse(output);
+    const deps = parsed.dependencies || {};
+    for (const [name, info] of Object.entries(deps)) {
+      if (name.includes("zowe") || name.includes("@brightside")) {
+        packages.push({ name, version: (info as { version?: string }).version || "unknown" });
+      }
+    }
+  } catch { 
+    // Return empty on error - don't block UI
+  }
+  return packages;
+}
+
+function getZoweEnvVars(): Array<{ name: string; value: string | undefined; description: string; category: string }> {
+  return ZOWE_ENV_VARS.map(v => ({ ...v, value: process.env[v.name] }));
+}
+
+// ============== Credentials Tab Helpers ==============
+
+async function generateSshKey(): Promise<void> {
+  const keyTypes = [
+    { label: "Ed25519 (Recommended)", value: "ed25519", description: "Modern, secure, fast" },
+    { label: "RSA 4096", value: "rsa", description: "Wide compatibility" },
+    { label: "ECDSA", value: "ecdsa", description: "Elliptic curve" },
+  ];
+
+  const selectedType = await vscode.window.showQuickPick(keyTypes, { placeHolder: "Select SSH key type to generate" });
+  if (!selectedType) return;
+
+  const keyName = await vscode.window.showInputBox({
+    prompt: "Enter a name for the key (or leave empty for default)",
+    placeHolder: selectedType.value === "ed25519" ? "id_ed25519" : selectedType.value === "rsa" ? "id_rsa" : "id_ecdsa",
+  });
+
+  if (keyName === undefined) return;
+
+  const sshDir = join(homedir(), ".ssh");
+  const defaultName = selectedType.value === "ed25519" ? "id_ed25519" : selectedType.value === "rsa" ? "id_rsa" : "id_ecdsa";
+  const finalName = keyName.trim() || defaultName;
+  const keyPath = join(sshDir, finalName);
+
+  if (existsSync(keyPath)) {
+    const overwrite = await vscode.window.showWarningMessage(
+      `Key "${finalName}" already exists. This will show the command but NOT overwrite automatically.`,
+      "Show Command", "Cancel"
+    );
+    if (overwrite !== "Show Command") return;
+  }
+
+  let cmd: string;
+  switch (selectedType.value) {
+    case "ed25519": cmd = `ssh-keygen -t ed25519 -f "${keyPath}" -C "generated-by-zowe-inspector"`; break;
+    case "rsa": cmd = `ssh-keygen -t rsa -b 4096 -f "${keyPath}" -C "generated-by-zowe-inspector"`; break;
+    case "ecdsa": cmd = `ssh-keygen -t ecdsa -b 521 -f "${keyPath}" -C "generated-by-zowe-inspector"`; break;
+    default: cmd = `ssh-keygen -f "${keyPath}"`;
+  }
+
+  const terminal = vscode.window.createTerminal("SSH Key Generator");
+  terminal.show();
+  terminal.sendText(`echo "Run this command to generate your SSH key:"`);
+  terminal.sendText(`echo "${cmd}"`);
+  terminal.sendText(`echo ""`);
+  terminal.sendText(`echo "After generating, copy the public key to your mainframe with:"`);
+  terminal.sendText(`echo "ssh-copy-id -i ${keyPath}.pub user@hostname"`);
+
+  vscode.window.showInformationMessage(`SSH key generation command shown in terminal.`);
+}
+
+async function copyPublicKeyToClipboard(keyPath: string): Promise<void> {
+  const publicKeyPath = keyPath.endsWith(".pub") ? keyPath : `${keyPath}.pub`;
+  try {
+    const fs = await import("node:fs/promises");
+    const content = await fs.readFile(publicKeyPath, "utf-8");
+    await vscode.env.clipboard.writeText(content.trim());
+    vscode.window.showInformationMessage("Public key copied to clipboard!");
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to read public key: ${error instanceof Error ? error.message : "Unknown error"}`);
+  }
+}
+
+function getSshKeyInfo(): SshKeyInfo[] {
+  const sshDir = join(homedir(), ".ssh");
+  const keys: SshKeyInfo[] = [];
+
+  if (!existsSync(sshDir)) return keys;
+
+  try {
+    const files = readdirSync(sshDir);
+    const keyFiles = files.filter(f => 
+      !f.endsWith(".pub") && !f.includes("known_hosts") && !f.includes("config") && !f.includes("authorized_keys")
+    );
+
+    for (const file of keyFiles) {
+      const filePath = join(sshDir, file);
+      try {
+        const stat = statSync(filePath);
+        if (stat.isFile()) {
+          const hasPublicKey = existsSync(`${filePath}.pub`);
+          let keyType = "unknown";
+          if (file.includes("ed25519")) keyType = "Ed25519";
+          else if (file.includes("ecdsa")) keyType = "ECDSA";
+          else if (file.includes("rsa")) keyType = "RSA";
+          else if (file.includes("dsa")) keyType = "DSA";
+
+          keys.push({ name: file, path: filePath, type: keyType, hasPublicKey });
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* ignore */ }
+
+  return keys;
+}
+
+function getCredentialManagerInfo(): { name: string; status: string; details: string } {
+  const platform = process.platform;
+  switch (platform) {
+    case "win32": return { name: "Windows Credential Manager", status: "available", details: "Zowe CLI uses Windows Credential Manager to securely store passwords and tokens." };
+    case "darwin": return { name: "macOS Keychain", status: "available", details: "Zowe CLI uses macOS Keychain to securely store passwords and tokens." };
+    case "linux": return { name: "libsecret (GNOME Keyring)", status: "check", details: "Zowe CLI uses libsecret on Linux. Ensure gnome-keyring or similar is installed." };
+    default: return { name: "Unknown", status: "unknown", details: "Platform not recognized." };
+  }
+}
+
+// ============== Layers Tab Helpers ==============
+
+function resolveEffectiveProfiles(layers: ConfigLayer[]): Map<string, EffectiveProfile> {
+  const effectiveProfiles = new Map<string, EffectiveProfile>();
+  const orderedLayers = layers.filter((l) => l.exists);
+
+  for (const layer of orderedLayers) {
+    const config = loadConfigFile(layer.path);
+    if (!config?.profiles) continue;
+    processProfilesForLayers(config.profiles, layer, effectiveProfiles, "");
+  }
+
+  return effectiveProfiles;
+}
+
+function processProfilesForLayers(
+  profiles: Record<string, ZoweConfigProfile>,
+  layer: ConfigLayer,
+  effectiveProfiles: Map<string, EffectiveProfile>,
+  prefix: string
+): void {
+  for (const [name, profile] of Object.entries(profiles)) {
+    const fullName = prefix ? `${prefix}.${name}` : name;
+
+    let effective = effectiveProfiles.get(fullName);
+    if (!effective) {
+      effective = { name: fullName, type: profile.type || "unknown", source: layer.path, properties: {} };
+      effectiveProfiles.set(fullName, effective);
+    } else {
+      if (!effective.overriddenBy) effective.overriddenBy = [];
+      effective.overriddenBy.push(layer.path);
+    }
+
+    if (profile.properties) {
+      for (const [propName, propValue] of Object.entries(profile.properties)) {
+        const existing = effective.properties[propName];
+        if (existing) {
+          if (!existing.overriddenSources) existing.overriddenSources = [];
+          existing.overriddenSources.push(existing.source);
+          existing.value = propValue;
+          existing.source = layer.path;
+        } else {
+          effective.properties[propName] = { value: propValue, source: layer.path };
+        }
+      }
+    }
+
+    if (profile.profiles) {
+      processProfilesForLayers(profile.profiles, layer, effectiveProfiles, fullName);
+    }
+  }
+}
+
+// ============== Main Content Update ==============
+
+function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: string, force = false): void {
+  // Throttle updates unless forced
+  const now = Date.now();
+  if (!force && now - lastUpdateTime < UPDATE_THROTTLE_MS) {
+    if (!updatePending) {
+      updatePending = true;
+      setTimeout(() => {
+        updatePending = false;
+        if (dashboardPanel) {
+          updateDashboardContent(dashboardPanel, workspaceFolder, true);
+        }
+      }, UPDATE_THROTTLE_MS);
+    }
+    return;
+  }
+  lastUpdateTime = now;
+
   const layers = findConfigLayers(workspaceFolder);
   const existingLayers = layers.filter(l => l.exists);
   
+  // Always collect diagnostics and profiles (needed for status bar)
   const allDiagnostics: Array<{file: string; diagnostics: vscode.Diagnostic[]}> = [];
   const allProfiles: Array<{
-    name: string; 
-    type: string; 
-    source: string;
+    name: string; type: string; source: string;
     properties: Record<string, unknown>;
     inherited: Record<string, { value: unknown; from: string }>;
   }> = [];
   
   for (const doc of vscode.workspace.textDocuments) {
     if (isZoweConfigFile(doc.uri.fsPath)) {
-      const diagnostics = vscode.languages.getDiagnostics(doc.uri)
-        .filter(d => d.source === "Zowe Config Inspector");
+      const diagnostics = vscode.languages.getDiagnostics(doc.uri).filter(d => d.source === "Zowe Config Inspector");
       if (diagnostics.length > 0) {
         allDiagnostics.push({ file: doc.uri.fsPath, diagnostics });
       }
@@ -702,27 +908,66 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
     }
   }
 
-  const totalErrors = allDiagnostics.reduce(
-    (sum, d) => sum + d.diagnostics.filter(x => x.severity === vscode.DiagnosticSeverity.Error).length, 0
-  );
-  const totalWarnings = allDiagnostics.reduce(
-    (sum, d) => sum + d.diagnostics.filter(x => x.severity === vscode.DiagnosticSeverity.Warning).length, 0
-  );
+  const totalErrors = allDiagnostics.reduce((sum, d) => sum + d.diagnostics.filter(x => x.severity === vscode.DiagnosticSeverity.Error).length, 0);
+  const totalWarnings = allDiagnostics.reduce((sum, d) => sum + d.diagnostics.filter(x => x.severity === vscode.DiagnosticSeverity.Warning).length, 0);
 
-  const envChecks = getAllEnvironmentChecks();
+  // Lazy load expensive data only when needed for active tab
+  let envChecks: EnvironmentCheck[] = [];
+  let extensions: Array<{ id: string; name: string; version: string; isActive: boolean }> = [];
+  let npmPackages: Array<{ name: string; version: string }> = [];
+  let zoweEnvVars: Array<{ name: string; value: string | undefined; description: string; category: string }> = [];
+  let sshKeys: SshKeyInfo[] = [];
+  let credentialManager = { name: "", status: "", details: "" };
+  let effectiveProfiles = new Map<string, EffectiveProfile>();
 
-  panel.webview.html = generateDashboardHtml(
-    existingLayers, 
-    allDiagnostics, 
-    allProfiles,
-    totalErrors, 
-    totalWarnings, 
+  // Only load data needed for the current tab
+  if (activeTab === "environment" || activeTab === "dashboard") {
+    envChecks = getAllEnvironmentChecks();
+  }
+  
+  if (activeTab === "environment") {
+    // Use cached values if available
+    if (cachedExtensions && cachedNpmPackages && now - cacheTime < CACHE_TTL_MS) {
+      extensions = cachedExtensions;
+      npmPackages = cachedNpmPackages;
+    } else {
+      extensions = getZoweRelatedExtensions();
+      npmPackages = getNpmGlobalPackagesCached();
+      cachedExtensions = extensions;
+      cachedNpmPackages = npmPackages;
+      cacheTime = now;
+    }
+    zoweEnvVars = getZoweEnvVars();
+  }
+  
+  if (activeTab === "credentials") {
+    sshKeys = getSshKeyInfo();
+    credentialManager = getCredentialManagerInfo();
+  }
+  
+  if (activeTab === "layers") {
+    effectiveProfiles = resolveEffectiveProfiles(layers);
+  }
+
+  panel.webview.html = generateTabbedDashboardHtml({
+    activeTab,
+    layers: existingLayers,
+    diagnostics: allDiagnostics,
+    profiles: allProfiles,
+    totalErrors,
+    totalWarnings,
     envChecks,
     connectionResults,
-    highlightProfileName
-  );
+    highlightProfileName,
+    extensions,
+    npmPackages,
+    zoweEnvVars,
+    sshKeys,
+    credentialManager,
+    effectiveProfiles,
+    allLayers: layers,
+  });
   
-  // Clear the highlight after rendering
   highlightProfileName = null;
 }
 
@@ -731,22 +976,14 @@ function collectProfiles(
   prefix: string, 
   source: string,
   rootProfiles: Record<string, ZoweConfigProfile>,
-  result: Array<{
-    name: string; 
-    type: string; 
-    source: string;
-    properties: Record<string, unknown>;
-    inherited: Record<string, { value: unknown; from: string }>;
-  }>
+  result: Array<{ name: string; type: string; source: string; properties: Record<string, unknown>; inherited: Record<string, { value: unknown; from: string }>; }>
 ): void {
   for (const [name, profile] of Object.entries(profiles)) {
     const fullName = prefix ? `${prefix}.${name}` : name;
     if (profile.type) {
       if (!result.some(p => p.name === fullName)) {
         result.push({ 
-          name: fullName, 
-          type: profile.type, 
-          source,
+          name: fullName, type: profile.type, source,
           properties: profile.properties || {},
           inherited: getInheritedProperties(rootProfiles, fullName),
         });
@@ -758,56 +995,364 @@ function collectProfiles(
   }
 }
 
-function generateDashboardHtml(
-  layers: ReturnType<typeof findConfigLayers>,
-  diagnostics: Array<{file: string; diagnostics: vscode.Diagnostic[]}>,
-  profiles: Array<{
-    name: string; 
-    type: string; 
-    source: string;
-    properties: Record<string, unknown>;
-    inherited: Record<string, { value: unknown; from: string }>;
-  }>,
-  totalErrors: number,
-  totalWarnings: number,
-  envChecks: EnvironmentCheck[],
-  connResults: Map<string, { status: string; message: string; latency?: number; timestamp: number }>,
-  highlightProfile: string | null
-): string {
+// ============== HTML Generation ==============
+
+interface DashboardData {
+  activeTab: string;
+  layers: ConfigLayer[];
+  diagnostics: Array<{file: string; diagnostics: vscode.Diagnostic[]}>;
+  profiles: Array<{ name: string; type: string; source: string; properties: Record<string, unknown>; inherited: Record<string, { value: unknown; from: string }>; }>;
+  totalErrors: number;
+  totalWarnings: number;
+  envChecks: EnvironmentCheck[];
+  connectionResults: Map<string, { status: string; message: string; latency?: number; timestamp: number }>;
+  highlightProfileName: string | null;
+  extensions: Array<{ id: string; name: string; version: string; isActive: boolean }>;
+  npmPackages: Array<{ name: string; version: string }>;
+  zoweEnvVars: Array<{ name: string; value: string | undefined; description: string; category: string }>;
+  sshKeys: SshKeyInfo[];
+  credentialManager: { name: string; status: string; details: string };
+  effectiveProfiles: Map<string, EffectiveProfile>;
+  allLayers: ConfigLayer[];
+}
+
+function generateTabbedDashboardHtml(data: DashboardData): string {
+  const { activeTab, totalErrors, totalWarnings } = data;
+  
   const statusClass = totalErrors > 0 ? "error" : totalWarnings > 0 ? "warning" : "success";
   const statusIcon = totalErrors > 0 ? "❌" : totalWarnings > 0 ? "⚠️" : "✅";
   const statusText = totalErrors > 0 
     ? `${totalErrors} Error(s), ${totalWarnings} Warning(s)`
-    : totalWarnings > 0 
-      ? `${totalWarnings} Warning(s)` 
-      : "Configuration Valid";
+    : totalWarnings > 0 ? `${totalWarnings} Warning(s)` : "Configuration Valid";
+
+  let tabContent = "";
+  switch (activeTab) {
+    case "environment": tabContent = generateEnvironmentTab(data); break;
+    case "credentials": tabContent = generateCredentialsTab(data); break;
+    case "layers": tabContent = generateLayersTab(data); break;
+    default: tabContent = generateDashboardTab(data); break;
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zowe Config Inspector</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: var(--vscode-font-family);
+      padding: 0; margin: 0;
+      color: var(--vscode-foreground);
+      background-color: var(--vscode-editor-background);
+      font-size: 13px;
+    }
+    
+    .tabs {
+      display: flex;
+      background: var(--vscode-editorGroupHeader-tabsBackground);
+      border-bottom: 1px solid var(--vscode-panel-border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .tab {
+      padding: 10px 16px;
+      cursor: pointer;
+      border: none;
+      background: none;
+      color: var(--vscode-foreground);
+      font-size: 12px;
+      opacity: 0.7;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+    .tab:hover { opacity: 1; background: var(--vscode-list-hoverBackground); }
+    .tab.active { opacity: 1; border-bottom-color: var(--vscode-focusBorder); font-weight: 600; }
+    
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 2px solid transparent;
+    }
+    .header.success { border-bottom-color: #4caf50; }
+    .header.warning { border-bottom-color: #ff9800; }
+    .header.error { border-bottom-color: #f44336; }
+    .header .icon { font-size: 20px; }
+    .header .text { font-size: 14px; font-weight: 600; }
+    
+    .container { padding: 16px; }
+    
+    .section { margin-bottom: 20px; }
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .card {
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      border-radius: 6px;
+      padding: 12px;
+      margin: 6px 0;
+    }
+    
+    .issue {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 10px;
+      margin: 4px 0;
+      border-radius: 4px;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      cursor: pointer;
+    }
+    .issue:hover { background: var(--vscode-list-hoverBackground); }
+    .issue.error { border-left: 3px solid var(--vscode-errorForeground); }
+    .issue.warning { border-left: 3px solid var(--vscode-editorWarning-foreground); }
+    .issue .location { 
+      font-size: 10px;
+      background: var(--vscode-badge-background);
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    
+    .profile {
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      border-radius: 6px;
+      margin: 6px 0;
+      overflow: hidden;
+    }
+    .profile.highlighted {
+      box-shadow: 0 0 0 2px var(--vscode-focusBorder);
+      animation: highlight-pulse 2s ease-out;
+    }
+    @keyframes highlight-pulse {
+      0% { box-shadow: 0 0 0 2px var(--vscode-focusBorder), 0 0 20px rgba(0, 127, 212, 0.6); }
+      100% { box-shadow: 0 0 0 2px var(--vscode-focusBorder); }
+    }
+    .profile-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+    }
+    .profile-icon { font-size: 16px; }
+    .profile-link { display: flex; align-items: center; gap: 8px; cursor: pointer; flex: 1; }
+    .profile-link:hover .profile-name { text-decoration: underline; color: var(--vscode-textLink-foreground); }
+    .profile-name { font-weight: 600; }
+    .profile-type {
+      font-size: 10px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    
+    .test-btn-group { display: inline-flex; border-radius: 3px; overflow: hidden; }
+    .test-btn {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      padding: 3px 8px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .test-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+    .test-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .test-btn-auth {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      border-left: 1px solid var(--vscode-button-background);
+      padding: 3px 6px;
+      cursor: pointer;
+      font-size: 9px;
+    }
+    
+    .conn-result {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      font-size: 11px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+    .conn-result.success { background: rgba(76, 175, 80, 0.1); }
+    .conn-result.failed { background: rgba(244, 67, 54, 0.1); }
+    .conn-result.testing { background: rgba(33, 150, 243, 0.1); }
+    .conn-latency { font-size: 10px; background: var(--vscode-badge-background); padding: 1px 6px; border-radius: 3px; }
+    
+    .profile.conn-success { border-left: 3px solid #4caf50; }
+    .profile.conn-failed { border-left: 3px solid #f44336; }
+    .profile.conn-testing { border-left: 3px solid #2196f3; }
+    
+    .inherited-section { border-top: 1px solid var(--vscode-panel-border); font-size: 11px; }
+    .inherited-section summary { padding: 6px 12px; cursor: pointer; color: var(--vscode-descriptionForeground); }
+    .inherited-props { padding: 4px 12px 8px 12px; }
+    .inherited-prop { display: flex; gap: 8px; padding: 2px 0; }
+    .prop-name { color: var(--vscode-symbolIcon-propertyForeground); min-width: 80px; }
+    .prop-value { flex: 1; color: var(--vscode-debugTokenExpression-string); }
+    .prop-from { color: var(--vscode-descriptionForeground); font-size: 10px; }
+    
+    .env-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      margin: 2px 0;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      border-radius: 4px;
+    }
+    .env-icon { flex-shrink: 0; }
+    .env-name { min-width: 130px; font-weight: 500; font-size: 11px; }
+    .env-value { flex: 1; font-family: var(--vscode-editor-font-family); font-size: 11px; }
+    .env-details { font-size: 10px; color: var(--vscode-descriptionForeground); max-width: 180px; }
+    
+    .action-btn {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      margin: 4px 4px 4px 0;
+    }
+    .action-btn:hover { background: var(--vscode-button-hoverBackground); }
+    .action-btn.secondary {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+    .inline-btn {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      padding: 2px 8px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 10px;
+    }
+    .copy-btn {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      padding: 2px 6px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 10px;
+    }
+    
+    .key-item {
+      background: var(--vscode-editor-background);
+      border-radius: 4px;
+      padding: 10px;
+      margin: 6px 0;
+    }
+    .key-header { display: flex; align-items: center; gap: 8px; }
+    .key-icon { font-size: 16px; }
+    .key-name { font-weight: 600; flex: 1; }
+    .key-type { font-size: 10px; background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 3px; }
+    .key-details { margin-top: 6px; font-size: 11px; display: flex; gap: 12px; }
+    .key-path { color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); }
+    .key-meta { color: var(--vscode-descriptionForeground); }
+    
+    .layer {
+      margin: 8px 0;
+      padding: 10px 12px;
+      border-radius: 5px;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+    }
+    .layer.missing { opacity: 0.5; }
+    .layer-header { display: flex; align-items: center; gap: 10px; }
+    .layer-priority { font-weight: bold; min-width: 25px; }
+    .layer-type { font-weight: bold; text-transform: capitalize; }
+    .layer-status { margin-left: auto; font-size: 11px; color: var(--vscode-descriptionForeground); }
+    .layer-path { margin-top: 4px; font-family: var(--vscode-editor-font-family); font-size: 11px; color: var(--vscode-descriptionForeground); }
+    .layer-profiles { margin-top: 4px; font-size: 11px; color: var(--vscode-descriptionForeground); }
+    
+    .no-items { padding: 16px; text-align: center; color: var(--vscode-descriptionForeground); }
+    
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .conn-result.testing .conn-icon { animation: pulse 1s infinite; }
+  </style>
+</head>
+<body>
+  <div class="tabs">
+    <button class="tab ${activeTab === 'dashboard' ? 'active' : ''}" onclick="switchTab('dashboard')">Dashboard</button>
+    <button class="tab ${activeTab === 'environment' ? 'active' : ''}" onclick="switchTab('environment')">Environment</button>
+    <button class="tab ${activeTab === 'credentials' ? 'active' : ''}" onclick="switchTab('credentials')">Credentials</button>
+    <button class="tab ${activeTab === 'layers' ? 'active' : ''}" onclick="switchTab('layers')">Layers</button>
+  </div>
+  
+  <div class="header ${statusClass}">
+    <span class="icon">${statusIcon}</span>
+    <span class="text">${statusText}</span>
+    <button class="action-btn secondary" style="margin-left: auto;" onclick="refresh()">Refresh</button>
+  </div>
+  
+  <div class="container">
+    ${tabContent}
+  </div>
+
+  <script>
+    const vscode = acquireVsCodeApi();
+    
+    function switchTab(tab) { vscode.postMessage({ command: 'switchTab', tab }); }
+    function openFile(file, line, character) { vscode.postMessage({ command: 'openFile', file, line, character }); }
+    function testConnection(profileName, profileType, withAuth) { vscode.postMessage({ command: 'testConnection', profileName, profileType, withAuth }); }
+    function openProfile(file, profileName) { vscode.postMessage({ command: 'openProfile', file, profileName }); }
+    function refresh() { vscode.postMessage({ command: 'refresh' }); }
+    function runCommand(cmd) { vscode.postMessage({ command: 'runCommand', cmd }); }
+    function updateCli() { vscode.postMessage({ command: 'updateCli' }); }
+    function installCli() { vscode.postMessage({ command: 'installCli' }); }
+    function addEnvVar() { vscode.postMessage({ command: 'addEnvVar' }); }
+    function copyEnvExport(name, value) { vscode.postMessage({ command: 'copyEnvExport', name, value }); }
+    function generateSshKey() { vscode.postMessage({ command: 'generateSshKey' }); }
+    function openSshFolder() { vscode.postMessage({ command: 'openSshFolder' }); }
+    function copyPublicKey(keyPath) { vscode.postMessage({ command: 'copyPublicKey', keyPath }); }
+    
+    window.addEventListener('load', function() {
+      const highlighted = document.getElementById('highlighted-profile');
+      if (highlighted) highlighted.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function generateDashboardTab(data: DashboardData): string {
+  const { diagnostics, profiles, connectionResults: connResults, highlightProfileName: highlightProfile } = data;
 
   const issuesHtml = diagnostics.length > 0 
     ? diagnostics.map(({file, diagnostics: diags}) => `
-        <div class="section-content">
-          <div class="file-name">${escapeHtml(shortenPath(file))}</div>
-          ${diags.map(d => {
-            // Simplify the message - just show the main error, not the huge list of profiles
-            const mainMessage = d.message.split('\n')[0];
-            return `
-            <div class="issue ${d.severity === 0 ? 'error' : d.severity === 1 ? 'warning' : 'info'}"
-                 onclick="openFile('${escapeHtml(file.replace(/\\/g, "\\\\"))}', ${d.range.start.line}, ${d.range.start.character})">
-              <span class="icon">${d.severity === 0 ? '❌' : d.severity === 1 ? '⚠️' : 'ℹ️'}</span>
-              <span class="message">${escapeHtml(mainMessage)}</span>
-              <span class="location">Ln ${d.range.start.line + 1}</span>
-            </div>
-          `;}).join('')}
-        </div>
+        <div class="file-name" style="font-size: 11px; color: var(--vscode-textLink-foreground); margin: 8px 0 4px 0;">${escapeHtml(shortenPath(file))}</div>
+        ${diags.map(d => `
+          <div class="issue ${d.severity === 0 ? 'error' : 'warning'}"
+               onclick="openFile('${escapeHtml(file.replace(/\\/g, "\\\\"))}', ${d.range.start.line}, ${d.range.start.character})">
+            <span class="icon">${d.severity === 0 ? '❌' : '⚠️'}</span>
+            <span style="flex: 1;">${escapeHtml(d.message.split('\n')[0])}</span>
+            <span class="location">Ln ${d.range.start.line + 1}</span>
+          </div>
+        `).join('')}
       `).join('')
-    : '<div class="no-issues">✅ No issues found</div>';
+    : '<div class="no-items">✅ No issues found</div>';
 
   const profilesHtml = profiles.length > 0
     ? profiles.map(p => {
         const connResult = connResults.get(p.name);
         const connStatusClass = connResult?.status === "success" ? "conn-success" 
           : connResult?.status === "failed" ? "conn-failed" 
-          : connResult?.status === "testing" ? "conn-testing" 
-          : connResult?.status === "pending" ? "conn-pending" : "";
+          : connResult?.status === "testing" ? "conn-testing" : "";
         
         const canTest = ["ssh", "zosmf", "tso", "zftp"].includes(p.type);
         const hasInherited = Object.keys(p.inherited).length > 0;
@@ -818,30 +1363,24 @@ function generateDashboardHtml(
         return `
           <div class="profile ${connStatusClass}${isHighlighted ? ' highlighted' : ''}" ${isHighlighted ? 'id="highlighted-profile"' : ''}>
             <div class="profile-header">
-              <span class="profile-link" onclick="openProfile('${escapedSource}', '${escapedName}')" title="Jump to profile in config file">
+              <span class="profile-link" onclick="openProfile('${escapedSource}', '${escapedName}')">
                 <span class="profile-icon">${getProfileIcon(p.type)}</span>
                 <span class="profile-name">${escapedName}</span>
               </span>
               <span class="profile-type">${escapeHtml(p.type)}</span>
               ${canTest ? `
                 <div class="test-btn-group">
-                  <button class="test-btn" onclick="testConnection('${escapedName}', '${escapeHtml(p.type)}', false)" 
-                          ${connResult?.status === "testing" ? "disabled" : ""}
-                          title="Test network connectivity">
+                  <button class="test-btn" onclick="testConnection('${escapedName}', '${escapeHtml(p.type)}', false)" ${connResult?.status === "testing" ? "disabled" : ""}>
                     ${connResult?.status === "testing" ? "⏳" : "Test"}
                   </button>
-                  <button class="test-btn-auth" onclick="testConnection('${escapedName}', '${escapeHtml(p.type)}', true)" 
-                          ${connResult?.status === "testing" ? "disabled" : ""}
-                          title="Test with authentication (opens terminal)">
-                    🔐
-                  </button>
+                  <button class="test-btn-auth" onclick="testConnection('${escapedName}', '${escapeHtml(p.type)}', true)" ${connResult?.status === "testing" ? "disabled" : ""}>🔐</button>
                 </div>
               ` : ''}
             </div>
             ${connResult ? `
               <div class="conn-result ${connResult.status}">
-                <span class="conn-icon">${connResult.status === "success" ? "✅" : connResult.status === "failed" ? "❌" : connResult.status === "pending" ? "👀" : "⏳"}</span>
-                <span class="conn-message">${escapeHtml(connResult.message)}</span>
+                <span class="conn-icon">${connResult.status === "success" ? "✅" : connResult.status === "failed" ? "❌" : "⏳"}</span>
+                <span style="flex: 1;">${escapeHtml(connResult.message)}</span>
                 ${connResult.latency ? `<span class="conn-latency">${connResult.latency}ms</span>` : ''}
               </div>
             ` : ''}
@@ -862,355 +1401,182 @@ function generateDashboardHtml(
           </div>
         `;
       }).join('')
-    : '<div class="no-profiles">No profiles defined</div>';
+    : '<div class="no-items">No profiles defined</div>';
+
+  return `
+    <div class="section">
+      <div class="section-title">Issues</div>
+      ${issuesHtml}
+    </div>
+    <div class="section">
+      <div class="section-title">Profiles (${profiles.length})</div>
+      ${profilesHtml}
+    </div>
+  `;
+}
+
+function generateEnvironmentTab(data: DashboardData): string {
+  const { envChecks, extensions, npmPackages, zoweEnvVars } = data;
+  const hasZoweCli = envChecks.some(c => c.name === "Zowe CLI" && c.status === "pass");
 
   const envHtml = envChecks.map(c => `
-    <div class="env-check ${c.status}">
+    <div class="env-item">
       <span class="env-icon">${c.status === 'pass' ? '✅' : c.status === 'fail' ? '❌' : c.status === 'warn' ? '⚠️' : '❓'}</span>
       <span class="env-name">${escapeHtml(c.name)}</span>
       <span class="env-value">${escapeHtml(c.value)}</span>
       ${c.details ? `<span class="env-details">${escapeHtml(c.details)}</span>` : ''}
-      ${c.action ? `<button class="env-action" onclick="runCommand('${escapeHtml(c.action.command)}')">${escapeHtml(c.action.label)}</button>` : ''}
+      ${c.action ? `<button class="inline-btn" onclick="runCommand('${escapeHtml(c.action.command)}')">${escapeHtml(c.action.label)}</button>` : ''}
     </div>
   `).join('');
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Zowe Config Inspector</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      font-family: var(--vscode-font-family);
-      padding: 0;
-      color: var(--vscode-foreground);
-      background-color: var(--vscode-editor-background);
-      font-size: 13px;
-      line-height: 1.4;
-    }
-    
-    .header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 16px 20px;
-      margin-bottom: 8px;
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      background: var(--vscode-editor-background);
-    }
-    .header.success { border-bottom: 2px solid #4caf50; }
-    .header.warning { border-bottom: 2px solid #ff9800; }
-    .header.error { border-bottom: 2px solid #f44336; }
-    .header .icon { font-size: 24px; }
-    .header .text { font-size: 15px; font-weight: 600; }
-    
-    .container { padding: 0 16px 16px 16px; }
-    
-    .section { margin-bottom: 16px; }
-    .section-header {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--vscode-descriptionForeground);
-      padding: 8px 4px;
-      border-bottom: 1px solid var(--vscode-panel-border);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .section-header:hover { color: var(--vscode-foreground); }
-    .section-header .collapse-icon { transition: transform 0.2s; }
-    .section.collapsed .collapse-icon { transform: rotate(-90deg); }
-    .section.collapsed .section-content { display: none; }
-    .section-content { padding: 8px 0; }
-    
-    .file-name {
-      font-size: 11px;
-      color: var(--vscode-textLink-foreground);
-      margin-bottom: 4px;
-      padding: 4px 0;
-    }
-    
-    .issue {
-      display: flex;
-      align-items: flex-start;
-      gap: 8px;
-      padding: 8px 10px;
-      margin: 4px 0;
-      border-radius: 4px;
-      background: var(--vscode-editor-inactiveSelectionBackground);
-      cursor: pointer;
-    }
-    .issue:hover { background: var(--vscode-list-hoverBackground); }
-    .issue .icon { flex-shrink: 0; }
-    .issue-content { flex: 1; min-width: 0; }
-    .issue-content:hover .message { text-decoration: underline; }
-    .issue .message { display: block; }
-    .issue .hint { 
-      display: block;
-      font-size: 11px;
-      color: var(--vscode-descriptionForeground);
-      margin-top: 2px;
-    }
-    .issue .location { 
-      flex-shrink: 0;
-      font-size: 10px;
-      color: var(--vscode-descriptionForeground);
-      background: var(--vscode-badge-background);
-      padding: 2px 6px;
-      border-radius: 3px;
-    }
-    .issue.error { border-left: 3px solid var(--vscode-errorForeground); }
-    .issue.warning { border-left: 3px solid var(--vscode-editorWarning-foreground); }
-    
-    .no-issues, .no-profiles {
-      padding: 16px;
-      text-align: center;
-      color: var(--vscode-descriptionForeground);
-      background: var(--vscode-editor-inactiveSelectionBackground);
-      border-radius: 6px;
-    }
-    
-    .profile {
-      background: var(--vscode-editor-inactiveSelectionBackground);
-      border-radius: 6px;
-      margin: 6px 0;
-      overflow: hidden;
-      transition: box-shadow 0.3s ease;
-    }
-    .profile.highlighted {
-      box-shadow: 0 0 0 2px var(--vscode-focusBorder), 0 0 12px rgba(0, 127, 212, 0.4);
-      animation: highlight-pulse 2s ease-out;
-    }
-    @keyframes highlight-pulse {
-      0% { box-shadow: 0 0 0 2px var(--vscode-focusBorder), 0 0 20px rgba(0, 127, 212, 0.6); }
-      100% { box-shadow: 0 0 0 2px var(--vscode-focusBorder), 0 0 12px rgba(0, 127, 212, 0.4); }
-    }
-    .profile-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-    }
-    .profile-icon { font-size: 16px; }
-    .profile-link {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      cursor: pointer;
-      flex: 1;
-    }
-    .profile-link:hover .profile-name { 
-      text-decoration: underline;
-      color: var(--vscode-textLink-foreground);
-    }
-    .profile-name { font-weight: 600; font-size: 13px; }
-    .profile-type {
-      font-size: 10px;
-      background: var(--vscode-badge-background);
-      color: var(--vscode-badge-foreground);
-      padding: 2px 8px;
-      border-radius: 10px;
-    }
-    
-    .test-btn-group {
-      display: inline-flex;
-      border-radius: 3px;
-      overflow: hidden;
-    }
-    .test-btn {
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
-      border: none;
-      padding: 3px 8px;
-      cursor: pointer;
-      font-size: 11px;
-    }
-    .test-btn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
-    .test-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-    .test-btn-auth {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-      border: none;
-      border-left: 1px solid var(--vscode-button-background);
-      padding: 3px 6px;
-      cursor: pointer;
-      font-size: 9px;
-    }
-    .test-btn-auth:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
-    .test-btn-auth:disabled { opacity: 0.6; cursor: not-allowed; }
-    
-    .conn-result {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 12px;
-      font-size: 11px;
-      border-top: 1px solid var(--vscode-panel-border);
-    }
-    .conn-result.success { background: rgba(76, 175, 80, 0.1); }
-    .conn-result.failed { background: rgba(244, 67, 54, 0.1); }
-    .conn-result.testing { background: rgba(33, 150, 243, 0.1); }
-    .conn-result.pending { background: rgba(255, 193, 7, 0.15); }
-    .conn-message { flex: 1; }
-    .conn-latency {
-      font-size: 10px;
-      background: var(--vscode-badge-background);
-      padding: 1px 6px;
-      border-radius: 3px;
-    }
-    
-    .profile.conn-success { border-left: 3px solid #4caf50; }
-    .profile.conn-failed { border-left: 3px solid #f44336; }
-    .profile.conn-testing { border-left: 3px solid #2196f3; }
-    .profile.conn-pending { border-left: 3px solid #ffc107; }
-    
-    .inherited-section {
-      border-top: 1px solid var(--vscode-panel-border);
-      font-size: 11px;
-    }
-    .inherited-section summary {
-      padding: 6px 12px;
-      cursor: pointer;
-      color: var(--vscode-descriptionForeground);
-    }
-    .inherited-section summary:hover { color: var(--vscode-foreground); }
-    .inherited-props { padding: 4px 12px 8px 12px; }
-    .inherited-prop {
-      display: flex;
-      gap: 8px;
-      padding: 2px 0;
-    }
-    .prop-name { color: var(--vscode-symbolIcon-propertyForeground); min-width: 80px; }
-    .prop-value { flex: 1; color: var(--vscode-debugTokenExpression-string); }
-    .prop-from { color: var(--vscode-descriptionForeground); font-size: 10px; }
-    
-    .env-check {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 8px;
-      font-size: 12px;
-    }
-    .env-icon { flex-shrink: 0; }
-    .env-name { min-width: 110px; color: var(--vscode-descriptionForeground); font-size: 11px; }
-    .env-value { flex: 1; font-family: var(--vscode-editor-font-family); font-size: 11px; }
-    .env-details { 
-      font-size: 10px; 
-      color: var(--vscode-descriptionForeground);
-      max-width: 150px;
-    }
-    .env-action {
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-      border: none;
-      padding: 2px 8px;
-      border-radius: 3px;
-      cursor: pointer;
-      font-size: 10px;
-      flex-shrink: 0;
-    }
-    .env-action:hover { background: var(--vscode-button-secondaryHoverBackground); }
-    
-    .footer {
-      padding: 12px 16px;
-      font-size: 11px;
-      color: var(--vscode-descriptionForeground);
-      text-align: center;
-      border-top: 1px solid var(--vscode-panel-border);
-    }
-    
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-    .conn-result.testing .conn-icon { animation: pulse 1s infinite; }
-  </style>
-</head>
-<body>
-  <div class="header ${statusClass}">
-    <span class="icon">${statusIcon}</span>
-    <span class="text">${statusText}</span>
-  </div>
-  
-  <div class="container">
-    <div class="section" id="issues-section">
-      <div class="section-header" onclick="toggleSection('issues-section')">
-        <span class="collapse-icon">▼</span>
-        Issues
-      </div>
-      ${issuesHtml}
+  const setVars = zoweEnvVars.filter(v => v.value !== undefined);
+  const envVarsHtml = setVars.length > 0
+    ? setVars.map(v => `
+        <div class="env-item">
+          <span class="env-name" style="font-family: var(--vscode-editor-font-family);">${escapeHtml(v.name)}</span>
+          <span class="env-value">${escapeHtml(v.value || "")}</span>
+          <button class="copy-btn" onclick="copyEnvExport('${escapeHtml(v.name)}', '${escapeHtml(v.value || "")}')">Copy</button>
+        </div>
+      `).join('')
+    : '<div class="no-items">No Zowe environment variables set</div>';
+
+  const extensionsHtml = extensions.length > 0
+    ? extensions.map(ext => `
+        <div class="env-item">
+          <span class="env-icon">${ext.isActive ? '🟢' : '⚪'}</span>
+          <span class="env-name">${escapeHtml(ext.name)}</span>
+          <span class="env-value">v${escapeHtml(ext.version)}</span>
+        </div>
+      `).join('')
+    : '<div class="no-items">No Zowe-related extensions found</div>';
+
+  const packagesHtml = npmPackages.length > 0
+    ? npmPackages.map(pkg => `
+        <div class="env-item">
+          <span class="env-name">${escapeHtml(pkg.name)}</span>
+          <span class="env-value">v${escapeHtml(pkg.version)}</span>
+        </div>
+      `).join('')
+    : '<div class="no-items">No Zowe packages found globally</div>';
+
+  return `
+    <div class="section">
+      <div class="section-title">System</div>
+      ${envHtml}
     </div>
-
-    <div class="section" id="profiles-section">
-      <div class="section-header" onclick="toggleSection('profiles-section')">
-        <span class="collapse-icon">▼</span>
-        Profiles (${profiles.length})
+    <div class="section">
+      <div class="section-title">
+        Zowe Environment Variables
+        <button class="inline-btn" onclick="addEnvVar()">+ Add</button>
       </div>
-      <div class="section-content">
-        ${profilesHtml}
-      </div>
+      ${envVarsHtml}
     </div>
-
-    <div class="section" id="env-section">
-      <div class="section-header" onclick="toggleSection('env-section')">
-        <span class="collapse-icon">▼</span>
-        Environment
-      </div>
-      <div class="section-content">
-        ${envHtml}
-      </div>
+    <div class="section">
+      <div class="section-title">VS Code Extensions</div>
+      ${extensionsHtml}
     </div>
-  </div>
-
-  <div class="footer">
-    Click issues to jump to editor • This panel updates automatically
-  </div>
-
-  <script>
-    const vscode = acquireVsCodeApi();
-    
-    function openFile(file, line, character) {
-      vscode.postMessage({ command: 'openFile', file, line, character });
-    }
-    
-    function testConnection(profileName, profileType, withAuth) {
-      vscode.postMessage({ command: 'testConnection', profileName, profileType, withAuth: withAuth || false });
-    }
-    
-    function openProfile(file, profileName) {
-      vscode.postMessage({ command: 'openProfile', file, profileName });
-    }
-    
-    function toggleSection(sectionId) {
-      const section = document.getElementById(sectionId);
-      section.classList.toggle('collapsed');
-    }
-    
-    function openTerminal(cmd) {
-      vscode.postMessage({ command: 'openTerminal', cmd });
-    }
-    
-    function runCommand(cmd) {
-      vscode.postMessage({ command: 'runCommand', cmd });
-    }
-    
-    // Scroll to highlighted profile on load
-    window.addEventListener('load', function() {
-      const highlighted = document.getElementById('highlighted-profile');
-      if (highlighted) {
-        highlighted.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    <div class="section">
+      <div class="section-title">Global NPM Packages</div>
+      ${packagesHtml}
+    </div>
+    <div style="margin-top: 16px;">
+      ${hasZoweCli 
+        ? '<button class="action-btn" onclick="updateCli()">Update Zowe CLI</button>'
+        : '<button class="action-btn" onclick="installCli()">Install Zowe CLI</button>'
       }
-    });
-  </script>
-</body>
-</html>`;
+      <button class="action-btn" onclick="generateSshKey()">Generate SSH Key</button>
+    </div>
+  `;
+}
+
+function generateCredentialsTab(data: DashboardData): string {
+  const { sshKeys, credentialManager } = data;
+
+  const keysHtml = sshKeys.length > 0
+    ? sshKeys.map(key => `
+        <div class="key-item">
+          <div class="key-header">
+            <span class="key-icon">🔑</span>
+            <span class="key-name">${escapeHtml(key.name)}</span>
+            <span class="key-type">${escapeHtml(key.type)}</span>
+            ${key.hasPublicKey ? `<button class="copy-btn" onclick="copyPublicKey('${escapeHtml(key.path.replace(/\\/g, "\\\\"))}')">Copy Public Key</button>` : ''}
+          </div>
+          <div class="key-details">
+            <span class="key-path">${escapeHtml(key.path)}</span>
+            <span class="key-meta">${key.hasPublicKey ? '✅ Has public key' : '⚠️ No public key'}</span>
+          </div>
+        </div>
+      `).join('')
+    : '<div class="no-items">No SSH keys found in ~/.ssh</div>';
+
+  return `
+    <div class="section">
+      <div class="section-title">Credential Manager</div>
+      <div class="card">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+          <span style="font-weight: 600;">${escapeHtml(credentialManager.name)}</span>
+          <span style="font-size: 10px; background: var(--vscode-badge-background); padding: 2px 8px; border-radius: 10px;">${escapeHtml(credentialManager.status)}</span>
+        </div>
+        <div style="font-size: 12px; color: var(--vscode-descriptionForeground);">${escapeHtml(credentialManager.details)}</div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">SSH Keys</div>
+      ${keysHtml}
+    </div>
+    <div style="margin-top: 16px;">
+      <button class="action-btn" onclick="generateSshKey()">Generate New SSH Key</button>
+      <button class="action-btn secondary" onclick="openSshFolder()">Open ~/.ssh Folder</button>
+    </div>
+  `;
+}
+
+function generateLayersTab(data: DashboardData): string {
+  const { allLayers, effectiveProfiles } = data;
+
+  const layersHtml = allLayers.slice().reverse().map((layer, index) => {
+    const priority = allLayers.length - index;
+    const statusIcon = layer.exists ? "✅" : "⬜";
+    const typeLabel = layer.userConfig ? `${layer.type} user` : layer.type;
+
+    return `
+      <div class="layer ${layer.exists ? "" : "missing"}">
+        <div class="layer-header">
+          <span class="layer-priority">${priority}.</span>
+          <span>${statusIcon}</span>
+          <span class="layer-type">${escapeHtml(typeLabel)}</span>
+          <span class="layer-status">${layer.exists ? "exists" : "not found"}</span>
+        </div>
+        <div class="layer-path">${escapeHtml(layer.path)}</div>
+        ${layer.exists && layer.profiles.length > 0 ? `<div class="layer-profiles">Profiles: ${escapeHtml(layer.profiles.join(", "))}</div>` : ""}
+      </div>
+    `;
+  }).join('');
+
+  const profilesHtml = Array.from(effectiveProfiles.entries()).map(([name, profile]) => {
+    const hasOverrides = profile.overriddenBy && profile.overriddenBy.length > 0;
+    return `
+      <div class="env-item">
+        <span style="font-weight: 600; color: var(--vscode-textLink-foreground);">${escapeHtml(name)}</span>
+        <span style="color: var(--vscode-descriptionForeground);">(${escapeHtml(profile.type)})</span>
+        ${hasOverrides ? `<span style="font-size: 10px; background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 3px;">${profile.overriddenBy!.length} override(s)</span>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="section">
+      <div class="section-title">Configuration Layers</div>
+      <p style="font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 12px;">
+        Higher layers override lower layers. Project configs take precedence over global configs.
+      </p>
+      ${layersHtml}
+    </div>
+    <div class="section">
+      <div class="section-title">Effective Profiles</div>
+      ${profilesHtml.length > 0 ? profilesHtml : '<div class="no-items">No profiles defined</div>'}
+    </div>
+  `;
 }
 
 function getProfileIcon(type: string): string {
@@ -1218,7 +1584,7 @@ function getProfileIcon(type: string): string {
     case "ssh": return "🔑";
     case "zosmf": return "🌐";
     case "base": return "📦";
-    case "tso": return "🟩";  // Green screen!
+    case "tso": return "🟩";
     case "zftp": return "📂";
     case "cics": return "🟩";
     case "endevor": return "📚";
