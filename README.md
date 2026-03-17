@@ -6,7 +6,7 @@ A diagnostic tool for Zowe CLI - validate configurations, analyze inheritance, c
 
 ## Features
 
-### 🔴 Real-Time Validation
+### Real-Time Validation
 
 As you edit `zowe.config.json`, errors and warnings appear immediately with red squiggly underlines:
 
@@ -15,11 +15,11 @@ As you edit `zowe.config.json`, errors and warnings appear immediately with red 
 - **Common mistakes** - port as string, host with protocol, missing files
 - **Profile reference errors** - defaults pointing to non-existent profiles
 
-### 💡 Hover Tooltips
+### Hover Tooltips
 
 Hover over any property to see documentation explaining what it does and how to use it.
 
-### 📊 Inspector Dashboard
+### Inspector Dashboard
 
 Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensive diagnostic view:
 
@@ -33,7 +33,7 @@ Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensiv
 
 Run `Zowe Inspector: Show Config Layers & Inheritance` to see:
 
-- All configuration files (global, project, user)
+- All active configuration files (global, project, user)
 - Which profiles are defined where
 - Which layer "wins" when there are conflicts
 
