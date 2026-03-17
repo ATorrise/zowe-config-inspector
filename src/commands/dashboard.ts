@@ -219,8 +219,22 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
           updateDashboardContent(dashboardPanel, workspaceFolder);
         }
         break;
+      case "editEnvVar":
+        await editEnvironmentVariable(message.name, message.currentValue);
+        if (dashboardPanel) {
+          updateDashboardContent(dashboardPanel, workspaceFolder);
+        }
+        break;
       case "copyEnvExport":
         await copyEnvExportCommand(message.name, message.value);
+        break;
+      case "updateExtension":
+        await updateExtension(message.extId);
+        // Clear cache so extensions are re-fetched on next render
+        cachedExtensions = null;
+        if (dashboardPanel) {
+          updateDashboardContent(dashboardPanel, workspaceFolder, true);
+        }
         break;
         
       // Credentials tab actions
@@ -654,6 +668,60 @@ async function copyEnvExportCommand(name: string, value: string): Promise<void> 
   const cmd = isWindows ? `setx ${name} "${value}"` : `export ${name}="${value}"`;
   await vscode.env.clipboard.writeText(cmd);
   vscode.window.showInformationMessage(`Copied: ${cmd}`);
+}
+
+async function editEnvironmentVariable(name: string, currentValue: string): Promise<void> {
+  const envVar = ZOWE_ENV_VARS.find(v => v.name === name);
+  
+  const newValue = await vscode.window.showInputBox({
+    prompt: `Edit value for ${name}`,
+    placeHolder: envVar?.description || "Enter new value",
+    value: currentValue,
+  });
+
+  if (newValue === undefined || newValue === currentValue) return;
+
+  const isWindows = process.platform === "win32";
+  const isPermanent = await vscode.window.showQuickPick(
+    [
+      { label: "Session only", description: "Set for this terminal session", value: "session" },
+      { label: "Permanent (User)", description: "Set permanently for your user", value: "permanent" },
+    ],
+    { placeHolder: "How should this variable be set?" }
+  );
+
+  if (!isPermanent) return;
+
+  const term = getOrCreateTerminal();
+  term.show();
+
+  if (isWindows) {
+    if (isPermanent.value === "permanent") {
+      term.sendText(`setx ${name} "${newValue}"`);
+      term.sendText(`echo "Environment variable updated permanently. Restart VS Code for changes to take effect."`);
+    } else {
+      term.sendText(`set ${name}=${newValue}`);
+    }
+  } else {
+    if (isPermanent.value === "permanent") {
+      const shell = process.env.SHELL || "/bin/bash";
+      const rcFile = shell.includes("zsh") ? "~/.zshrc" : "~/.bashrc";
+      term.sendText(`echo 'export ${name}="${newValue}"' >> ${rcFile}`);
+      term.sendText(`source ${rcFile}`);
+    } else {
+      term.sendText(`export ${name}="${newValue}"`);
+    }
+  }
+}
+
+async function updateExtension(extId: string): Promise<void> {
+  try {
+    vscode.window.showInformationMessage(`Checking for updates for ${extId}...`);
+    await vscode.commands.executeCommand("workbench.extensions.installExtension", extId);
+    vscode.window.showInformationMessage(`Extension ${extId} updated (or already at latest version).`);
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to update extension: ${error}`);
+  }
 }
 
 function getZoweRelatedExtensions(): Array<{ id: string; name: string; version: string; isActive: boolean }> {
@@ -1270,7 +1338,9 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
     function updateCli() { vscode.postMessage({ command: 'updateCli' }); }
     function installCli() { vscode.postMessage({ command: 'installCli' }); }
     function addEnvVar() { vscode.postMessage({ command: 'addEnvVar' }); }
+    function editEnvVar(name, currentValue) { vscode.postMessage({ command: 'editEnvVar', name, currentValue }); }
     function copyEnvExport(name, value) { vscode.postMessage({ command: 'copyEnvExport', name, value }); }
+    function updateExtension(extId) { vscode.postMessage({ command: 'updateExtension', extId }); }
     function generateSshKey() { vscode.postMessage({ command: 'generateSshKey' }); }
     function openSshFolder() { vscode.postMessage({ command: 'openSshFolder' }); }
     function copyPublicKey(keyPath) { vscode.postMessage({ command: 'copyPublicKey', keyPath }); }
@@ -1387,6 +1457,7 @@ function generateEnvironmentTab(data: DashboardData): string {
         <div class="env-item">
           <span class="env-name" style="font-family: var(--vscode-editor-font-family);">${escapeHtml(v.name)}</span>
           <span class="env-value">${escapeHtml(v.value || "")}</span>
+          <button class="copy-btn" onclick="editEnvVar('${escapeHtml(v.name)}', '${escapeHtml(v.value || "")}')">Edit</button>
           <button class="copy-btn" onclick="copyEnvExport('${escapeHtml(v.name)}', '${escapeHtml(v.value || "")}')">Copy</button>
         </div>
       `).join('')
@@ -1398,6 +1469,7 @@ function generateEnvironmentTab(data: DashboardData): string {
           <span class="env-icon">${ext.isActive ? '🟢' : '⚪'}</span>
           <span class="env-name">${escapeHtml(ext.name)}</span>
           <span class="env-value">v${escapeHtml(ext.version)}</span>
+          <button class="copy-btn" onclick="updateExtension('${escapeHtml(ext.id)}')">Update</button>
         </div>
       `).join('')
     : '<div class="no-items">No Zowe-related extensions found</div>';
