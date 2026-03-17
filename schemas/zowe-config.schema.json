@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zowe.org/schemas/zowe-config.schema.json",
+  "title": "Zowe CLI Team Configuration",
+  "description": "Schema for Zowe CLI team configuration files (zowe.config.json)",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL or path to the JSON schema"
+    },
+    "profiles": {
+      "type": "object",
+      "description": "Connection profile definitions",
+      "additionalProperties": {
+        "$ref": "#/definitions/profile"
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Maps profile types to default profile names",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "autoStore": {
+      "type": "boolean",
+      "description": "When true, automatically store credentials in secure credential store",
+      "default": true
+    }
+  },
+  "definitions": {
+    "profile": {
+      "type": "object",
+      "description": "A connection profile definition",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Profile type (ssh, zosmf, base, etc.)",
+          "enum": ["ssh", "zosmf", "base", "tso", "zftp", "cics", "db2", "endevor", "mq"]
+        },
+        "properties": {
+          "type": "object",
+          "description": "Connection properties",
+          "properties": {
+            "host": {
+              "type": "string",
+              "description": "Hostname or IP address",
+              "minLength": 1
+            },
+            "port": {
+              "type": "integer",
+              "description": "Port number",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "user": {
+              "type": "string",
+              "description": "Username for authentication"
+            },
+            "password": {
+              "type": "string",
+              "description": "Password for authentication"
+            },
+            "rejectUnauthorized": {
+              "type": "boolean",
+              "description": "Reject self-signed certificates"
+            },
+            "protocol": {
+              "type": "string",
+              "enum": ["http", "https"],
+              "description": "Connection protocol"
+            },
+            "basePath": {
+              "type": "string",
+              "description": "Base path for API requests"
+            },
+            "privateKey": {
+              "type": "string",
+              "description": "Path to SSH private key file"
+            },
+            "keyPassphrase": {
+              "type": "string",
+              "description": "Passphrase for encrypted private key"
+            },
+            "handshakeTimeout": {
+              "type": "integer",
+              "description": "SSH handshake timeout in milliseconds",
+              "minimum": 0
+            },
+            "tokenType": {
+              "type": "string",
+              "description": "Authentication token type"
+            },
+            "tokenValue": {
+              "type": "string",
+              "description": "Authentication token value"
+            },
+            "certFile": {
+              "type": "string",
+              "description": "Path to client certificate file"
+            },
+            "certKeyFile": {
+              "type": "string",
+              "description": "Path to client certificate key file"
+            },
+            "encoding": {
+              "type": "string",
+              "description": "Character encoding for data transfer"
+            }
+          }
+        },
+        "secure": {
+          "type": "array",
+          "description": "Properties to store in secure credential manager",
+          "items": {
+            "type": "string"
+          }
+        },
+        "profiles": {
+          "type": "object",
+          "description": "Nested profiles that inherit from this profile",
+          "additionalProperties": {
+            "$ref": "#/definitions/profile"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

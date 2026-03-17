@@ -1,0 +1,190 @@
+{
+  "name": "zowe-config-inspector",
+  "displayName": "Zowe Config Inspector",
+  "description": "Diagnostic tool for Zowe CLI - validate configurations, analyze inheritance, check credentials, test connections, and troubleshoot your mainframe development environment",
+  "version": "0.1.0",
+  "publisher": "your-publisher-id",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_ORG/zowe-config-validator.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "zowe",
+    "mainframe",
+    "z/OS",
+    "config",
+    "validation",
+    "zowe explorer"
+  ],
+  "activationEvents": [
+    "workspaceContains:zowe.config.json",
+    "workspaceContains:.zowe/zowe.config.json",
+    "onLanguage:json",
+    "onLanguage:jsonc"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "zoweInspector.showDashboard",
+        "title": "Zowe Inspector: Open Dashboard",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "zoweInspector.checkConfig",
+        "title": "Zowe Inspector: Validate Configuration",
+        "icon": "$(check)"
+      },
+      {
+        "command": "zoweInspector.showLayers",
+        "title": "Zowe Inspector: Show Config Layers & Inheritance",
+        "icon": "$(layers)"
+      },
+      {
+        "command": "zoweInspector.showCredentials",
+        "title": "Zowe Inspector: Credentials & SSH Keys",
+        "icon": "$(key)"
+      },
+      {
+        "command": "zoweInspector.checkEnvironment",
+        "title": "Zowe Inspector: Check Environment & Versions",
+        "icon": "$(versions)"
+      },
+      {
+        "command": "zoweInspector.generateSshKey",
+        "title": "Zowe Inspector: Generate SSH Key",
+        "icon": "$(add)"
+      },
+      {
+        "command": "zoweInspector.updateCli",
+        "title": "Zowe Inspector: Update Zowe CLI",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "zoweInspector.validateProfile",
+        "title": "Inspect Profile",
+        "icon": "$(search)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
+          "command": "zoweInspector.checkConfig",
+          "group": "1_zoweInspector@1"
+        },
+        {
+          "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
+          "command": "zoweInspector.showLayers",
+          "group": "1_zoweInspector@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
+          "command": "zoweInspector.showDashboard",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
+          "command": "zoweInspector.checkConfig",
+          "group": "1_zoweInspector@1"
+        },
+        {
+          "when": "resourceFilename =~ /zowe\\.config.*\\.json$/",
+          "command": "zoweInspector.showDashboard",
+          "group": "1_zoweInspector@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "zoweInspector.validateProfile",
+          "when": "view =~ /^zowe\\.(ds|uss|jobs)\\.explorer/",
+          "group": "6_zowe_inspector@99"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Zowe Config Inspector",
+      "properties": {
+        "zoweInspector.enableRealTimeValidation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable real-time validation as you edit zowe.config.json files"
+        },
+        "zoweInspector.validateOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run full validation when saving configuration files"
+        },
+        "zoweInspector.showInfoDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show informational diagnostics (hints) in addition to errors and warnings"
+        },
+        "zoweInspector.checkSshKeyExists": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify that SSH private key files exist on disk"
+        },
+        "zoweInspector.autoCheckOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run environment check when VS Code starts"
+        }
+      }
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": [
+          "zowe.config.json",
+          "zowe.config.user.json"
+        ],
+        "url": "./schemas/zowe-config.schema.json"
+      }
+    ],
+    "languages": [
+      {
+        "id": "jsonc",
+        "filenames": [
+          "zowe.config.json",
+          "zowe.config.user.json"
+        ]
+      }
+    ]
+  },
+  "extensionDependencies": [],
+  "extensionPack": [],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "biome check src",
+    "lint:fix": "biome check --write src",
+    "test": "vitest run",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.1",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "comment-json": "^4.2.5"
+  }
+}
