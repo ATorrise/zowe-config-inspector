@@ -29,7 +29,7 @@ Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensiv
 - **Environment Status** - Node.js version, Zowe CLI version, credential manager status
 - **Inheritance Visualization** - See which properties are inherited from parent profiles
 
-### 📚 Layer Visualization
+### Layer Visualization
 
 Run `Zowe Inspector: Show Config Layers & Inheritance` to see:
 
@@ -37,7 +37,7 @@ Run `Zowe Inspector: Show Config Layers & Inheritance` to see:
 - Which profiles are defined where
 - Which layer "wins" when there are conflicts
 
-### 🔑 Credentials & SSH Keys
+### Credentials & SSH Keys
 
 Run `Zowe Inspector: Credentials & SSH Keys` to:
 
