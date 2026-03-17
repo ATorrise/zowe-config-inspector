@@ -237,14 +237,14 @@ function validateProfiles(
   if (config.defaults) {
     for (const [type, profileName] of Object.entries(config.defaults)) {
       if (!allProfileNames.includes(profileName)) {
+        const available = allProfileNames.length > 0 ? ` (available: ${allProfileNames.join(", ")})` : "";
         const range = findPropertyInLine(content, profileName) || findPropertyInLine(content, type);
         issues.push({
           severity: "error",
           code: "DEFAULT_PROFILE_NOT_FOUND",
-          message: `Default profile "${profileName}" for type "${type}" does not exist`,
+          message: `Default "${type}" profile "${profileName}" does not exist${available}`,
           file: filePath,
           path: `/defaults/${type}`,
-          suggestion: `Available profiles: ${allProfileNames.join(", ") || "none"}`,
           range: range || undefined,
         });
       }
@@ -270,17 +270,74 @@ function validateProfilesRecursive(
     const fullPath = prefix ? `${prefix}.${name}` : name;
     const jsonPath = `/profiles/${fullPath.replace(/\./g, "/profiles/")}`;
 
+    // Check for empty profiles
     if (!profile.type && !profile.properties && !profile.profiles) {
       const range = findPropertyInLine(content, name);
       issues.push({
         severity: "warning",
         code: "EMPTY_PROFILE",
-        message: `Profile "${fullPath}" appears to be empty`,
+        message: `Profile "${fullPath}" is empty - add type and properties or remove it`,
         file: filePath,
         path: jsonPath,
-        suggestion: "Add a type and properties, or remove the profile.",
         range: range || undefined,
       });
+    }
+
+    // Validate profile name (no whitespace, reasonable characters)
+    if (/\s/.test(name)) {
+      const range = findPropertyInLine(content, name);
+      issues.push({
+        severity: "error",
+        code: "PROFILE_NAME_WHITESPACE",
+        message: `Profile name "${name}" contains whitespace - use underscores or hyphens instead`,
+        file: filePath,
+        path: jsonPath,
+        range: range || undefined,
+      });
+    }
+
+    // Validate secure array format
+    if (profile.secure) {
+      if (!Array.isArray(profile.secure)) {
+        const range = findPropertyInLine(content, "secure");
+        issues.push({
+          severity: "error",
+          code: "SECURE_NOT_ARRAY",
+          message: `Profile "${fullPath}": secure must be an array of property names`,
+          file: filePath,
+          path: `${jsonPath}/secure`,
+          range: range || undefined,
+        });
+      } else {
+        // Check for duplicate entries in secure array
+        const seen = new Set<string>();
+        for (const item of profile.secure) {
+          if (typeof item !== "string") {
+            const range = findPropertyInLine(content, "secure");
+            issues.push({
+              severity: "error",
+              code: "SECURE_ITEM_NOT_STRING",
+              message: `Profile "${fullPath}": secure array items must be strings`,
+              file: filePath,
+              path: `${jsonPath}/secure`,
+              range: range || undefined,
+            });
+            break;
+          }
+          if (seen.has(item)) {
+            const range = findPropertyInLine(content, item);
+            issues.push({
+              severity: "warning",
+              code: "SECURE_DUPLICATE",
+              message: `Profile "${fullPath}": "${item}" is duplicated in secure array`,
+              file: filePath,
+              path: `${jsonPath}/secure`,
+              range: range || undefined,
+            });
+          }
+          seen.add(item);
+        }
+      }
     }
 
     if (profile.properties) {
@@ -290,17 +347,16 @@ function validateProfilesRecursive(
     // Note: Secure properties are stored in credential manager, NOT in the JSON file.
     // So it's actually CORRECT for secure properties to NOT be in the properties section.
     // We only warn if a property is in BOTH secure AND properties (potential exposure risk)
-    if (profile.secure && profile.properties) {
+    if (profile.secure && Array.isArray(profile.secure) && profile.properties) {
       for (const secureProp of profile.secure) {
-        if (secureProp in profile.properties) {
+        if (typeof secureProp === "string" && secureProp in profile.properties) {
           const range = findPropertyInLine(content, secureProp);
           issues.push({
             severity: "warning",
             code: "SECURE_PROPERTY_IN_PLAINTEXT",
-            message: `Profile "${fullPath}": "${secureProp}" is marked secure but also in properties (may be exposed)`,
+            message: `Profile "${fullPath}": "${secureProp}" in plaintext - remove from properties (it's in secure store)`,
             file: filePath,
             path: `${jsonPath}/properties/${secureProp}`,
-            suggestion: `Remove "${secureProp}" from properties - it should only be in the secure credential store.`,
             range: range || undefined,
           });
         }
@@ -328,31 +384,88 @@ function validateProfileProperties(
   const properties = profile.properties || {};
   const profileType = profile.type;
 
+  // Port validation
   if (typeof properties.port === "string") {
     const range = findPropertyInLine(content, "port");
     issues.push({
       severity: "error",
       code: "PORT_TYPE_ERROR",
-      message: `Profile "${profileName}": port should be a number, not a string`,
+      message: `Profile "${profileName}": port must be a number - change "${properties.port}" to ${properties.port}`,
       file: filePath,
       path: `/profiles/${profileName}/properties/port`,
-      suggestion: `Change "port": "${properties.port}" to "port": ${properties.port}`,
       range: range || undefined,
     });
+  } else if (typeof properties.port === "number") {
+    if (properties.port < 1 || properties.port > 65535) {
+      const range = findPropertyInLine(content, "port");
+      issues.push({
+        severity: "error",
+        code: "PORT_OUT_OF_RANGE",
+        message: `Profile "${profileName}": port ${properties.port} is invalid - must be between 1 and 65535`,
+        file: filePath,
+        path: `/profiles/${profileName}/properties/port`,
+        range: range || undefined,
+      });
+    }
+  }
+
+  // Protocol validation
+  if (properties.protocol && typeof properties.protocol === "string") {
+    const validProtocols = ["http", "https"];
+    if (!validProtocols.includes(properties.protocol.toLowerCase())) {
+      const range = findPropertyInLine(content, "protocol");
+      issues.push({
+        severity: "error",
+        code: "INVALID_PROTOCOL",
+        message: `Profile "${profileName}": protocol must be "http" or "https", not "${properties.protocol}"`,
+        file: filePath,
+        path: `/profiles/${profileName}/properties/protocol`,
+        range: range || undefined,
+      });
+    }
+  }
+
+  // Encoding validation (should be a number for z/OS code pages)
+  if (properties.encoding !== undefined && typeof properties.encoding === "string") {
+    const range = findPropertyInLine(content, "encoding");
+    issues.push({
+      severity: "warning",
+      code: "ENCODING_TYPE_WARNING",
+      message: `Profile "${profileName}": encoding is typically a number (e.g., 1047) - got string "${properties.encoding}"`,
+      file: filePath,
+      path: `/profiles/${profileName}/properties/encoding`,
+      range: range || undefined,
+    });
+  }
+
+  // responseTimeout validation
+  if (typeof properties.responseTimeout === "number") {
+    if (properties.responseTimeout < 5 || properties.responseTimeout > 600) {
+      const range = findPropertyInLine(content, "responseTimeout");
+      issues.push({
+        severity: "warning",
+        code: "RESPONSE_TIMEOUT_OUT_OF_RANGE",
+        message: `Profile "${profileName}": responseTimeout ${properties.responseTimeout} outside recommended range (5-600 seconds)`,
+        file: filePath,
+        path: `/profiles/${profileName}/properties/responseTimeout`,
+        range: range || undefined,
+      });
+    }
   }
 
   if (properties.host && typeof properties.host === "string") {
     const host = properties.host;
 
     if (host.includes("://")) {
+      const protocol = host.split("://")[0];
+      const hostOnly = host.split("://")[1]?.split("/")[0] || host;
       const range = findPropertyInLine(content, "host");
       issues.push({
         severity: "error",
         code: "HOST_INCLUDES_PROTOCOL",
-        message: `Profile "${profileName}": host should not include protocol`,
+        message: `Profile "${profileName}": remove "${protocol}://" from host - use "${hostOnly}" instead`,
         file: filePath,
         path: `/profiles/${profileName}/properties/host`,
-        suggestion: "Remove http:// or https:// from the host value.",
         range: range || undefined,
       });
     }
@@ -362,10 +475,9 @@ function validateProfileProperties(
       issues.push({
         severity: "error",
         code: "HOST_CONTAINS_SPACE",
-        message: `Profile "${profileName}": host contains spaces`,
+        message: `Profile "${profileName}": host contains spaces - remove them`,
         file: filePath,
         path: `/profiles/${profileName}/properties/host`,
-        suggestion: "Remove spaces from the hostname.",
         range: range || undefined,
       });
     }
@@ -375,10 +487,9 @@ function validateProfileProperties(
       issues.push({
         severity: "info",
         code: "LOCALHOST_HOST",
-        message: `Profile "${profileName}": host is set to localhost`,
+        message: `Profile "${profileName}": "${host}" is unusual for mainframe - is this intentional?`,
         file: filePath,
         path: `/profiles/${profileName}/properties/host`,
-        suggestion: "This is unusual for a mainframe connection. Is this intentional?",
         range: range || undefined,
       });
     }
@@ -390,10 +501,9 @@ function validateProfileProperties(
       issues.push({
         severity: "info",
         code: "SSH_DUAL_AUTH",
-        message: `Profile "${profileName}": both privateKey and password are set`,
+        message: `Profile "${profileName}": both privateKey and password set - privateKey takes priority`,
         file: filePath,
         path: `/profiles/${profileName}/properties`,
-        suggestion: "privateKey will be tried first. Consider removing one for clarity.",
         range: range || undefined,
       });
     }
@@ -405,10 +515,9 @@ function validateProfileProperties(
         issues.push({
           severity: "error",
           code: "SSH_KEY_NOT_FOUND",
-          message: `Profile "${profileName}": private key file not found`,
+          message: `Profile "${profileName}": file not found: ${keyPath}`,
           file: filePath,
           path: `/profiles/${profileName}/properties/privateKey`,
-          suggestion: `Verify the path exists: ${keyPath}`,
           range: range || undefined,
         });
       }
@@ -421,10 +530,9 @@ function validateProfileProperties(
       issues.push({
         severity: "warning",
         code: "TLS_VERIFICATION_DISABLED",
-        message: `Profile "${profileName}": TLS certificate verification is disabled`,
+        message: `Profile "${profileName}": TLS verification disabled - insecure for production`,
         file: filePath,
         path: `/profiles/${profileName}/properties/rejectUnauthorized`,
-        suggestion: "This is insecure for production. Consider enabling certificate verification.",
         range: range || undefined,
       });
     }
@@ -444,10 +552,9 @@ function validateProfileProperties(
           issues.push({
             severity: "info",  // Downgrade to info since it might be intentional
             code: "POSSIBLE_TYPO",
-            message: `Profile "${profileName}": "${prop}" might be a typo`,
+            message: `Profile "${profileName}": unknown "${prop}" - did you mean "${similar}"?`,
             file: filePath,
             path: `/profiles/${profileName}/properties/${prop}`,
-            suggestion: `Did you mean "${similar}"? Ignore if this is a custom property.`,
             range: range || undefined,
           });
         }
@@ -461,19 +568,27 @@ function validateProfileProperties(
 
 function getKnownPropertiesForType(type?: string): string[] {
   // Common properties that can appear on any profile type
-  const common = ["host", "port", "user", "password", "rejectUnauthorized", "tokenType", "tokenValue", "authOrder", "protocol"];
+  const common = ["host", "port", "user", "password", "rejectUnauthorized", "tokenType", "tokenValue", "authOrder", "protocol", "basePath"];
   
   switch (type) {
     case "ssh":
       return [...common, "privateKey", "keyPassphrase", "handshakeTimeout"];
     case "zosmf":
-      return [...common, "basePath", "certFile", "certKeyFile", "encoding"];
+      return [...common, "certFile", "certKeyFile", "encoding", "responseTimeout"];
     case "base":
       return [...common, "encoding"];
     case "tso":
-      return [...common, "account", "codePage", "logonProcedure", "regionSize", "characterSet"];
+      return [...common, "account", "codePage", "logonProcedure", "regionSize", "characterSet", "columns", "rows"];
     case "zftp":
-      return [...common, "secureFtp", "connectionTimeout"];
+      return [...common, "secureFtp", "connectionTimeout", "servername"];
+    case "endevor":
+      return [...common];
+    case "cics":
+      return [...common, "regionName", "cicsPlex"];
+    case "db2":
+      return [...common, "database", "sslFile"];
+    case "mq":
+      return [...common];
     default:
       // For unknown profile types (plugins, extensions), don't warn about unknown properties
       // since we don't know what properties they support
