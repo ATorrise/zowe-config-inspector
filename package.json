@@ -3,12 +3,16 @@
   "displayName": "Zowe Config Inspector",
   "description": "Diagnostic tool for Zowe CLI - validate configurations, analyze inheritance, check credentials, test connections, and troubleshoot your mainframe development environment",
   "version": "0.1.0",
-  "publisher": "your-publisher-id",
+  "publisher": "ATorrise",
   "icon": "resources/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_ORG/zowe-config-validator.git"
+    "url": "https://github.com/ATorrise/zowe-config-inspector.git"
   },
+  "bugs": {
+    "url": "https://github.com/ATorrise/zowe-config-inspector/issues"
+  },
+  "homepage": "https://github.com/ATorrise/zowe-config-inspector#readme",
   "engines": {
     "vscode": "^1.85.0"
   },

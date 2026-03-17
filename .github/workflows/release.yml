@@ -1,0 +1,50 @@
+name: Build VSIX
+
+# Triggers:
+# 1. Manually - Go to Actions tab, select this workflow, click "Run workflow"
+# 2. On version tags - When you push a tag like v0.1.0, it creates a GitHub Release
+on:
+  workflow_dispatch:  # Manual trigger button in GitHub Actions
+  push:
+    tags:
+      - 'v*'  # Only on version tags, NOT on regular commits
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Compile
+        run: npm run compile
+      
+      - name: Package VSIX
+        run: npx vsce package
+      
+      # Always upload as artifact (downloadable from Actions tab)
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zowe-config-inspector-vsix
+          path: "*.vsix"
+          retention-days: 30
+      
+      # Only create a GitHub Release when triggered by a version tag
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: "*.vsix"
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

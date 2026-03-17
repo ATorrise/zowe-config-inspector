@@ -204,7 +204,7 @@ This extension works alongside [Zowe Explorer](https://marketplace.visualstudio.
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_ORG/zowe-config-inspector.git
+git clone https://github.com/ATorrise/zowe-config-inspector.git
 cd zowe-config-inspector
 
 # Install dependencies
