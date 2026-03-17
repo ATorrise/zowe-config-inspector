@@ -15,10 +15,6 @@ As you edit `zowe.config.json`, errors and warnings appear immediately with red 
 - **Common mistakes** - port as string, host with protocol, missing files
 - **Profile reference errors** - defaults pointing to non-existent profiles
 
-### Hover Tooltips
-
-Hover over any property to see documentation explaining what it does and how to use it.
-
 ### Inspector Dashboard
 
 Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensive diagnostic view with tabbed navigation:
@@ -30,11 +26,9 @@ Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensiv
 - **Inheritance Visualization** - See which properties are inherited from parent profiles
 
 **Environment Tab:**
-- Node.js and Zowe CLI versions
-- ZOWE_CLI_HOME location
+- System status: Node.js, Zowe CLI (with Update button), ZOWE_CLI_HOME, Credential Manager, SSH Keys
 - Zowe environment variables - view set variables, add new ones from curated list
-- Installed Zowe-related VS Code extensions
-- Update Zowe CLI and Generate SSH Key buttons
+- Installed Zowe-related VS Code extensions (with Update buttons)
 
 **Credentials Tab:**
 - View all SSH keys in `~/.ssh`

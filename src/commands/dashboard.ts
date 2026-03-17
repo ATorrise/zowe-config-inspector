@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import type { ConfigLayer, ExtensionSettings, ZoweConfigProfile } from "../types.js";
-import { findConfigLayers, isActiveZoweConfig, isZoweConfigFile, loadConfigFile } from "../utils/config-finder.js";
+import { findConfigLayers, loadConfigFile } from "../utils/config-finder.js";
 import { getAllEnvironmentChecks, type EnvironmentCheck } from "../utils/environment-checks.js";
 import { validateDocument } from "../validators/document-validator.js";
 
@@ -1163,6 +1163,17 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
     .container { padding: 16px; }
     
     .section { margin-bottom: 20px; }
+    .section-collapsible { margin-bottom: 20px; }
+    .section-collapsible > summary { list-style: none; }
+    .section-collapsible > summary::-webkit-details-marker { display: none; }
+    .section-collapsible > summary::before {
+      content: '▶';
+      display: inline-block;
+      margin-right: 6px;
+      font-size: 10px;
+      transition: transform 0.2s;
+    }
+    .section-collapsible[open] > summary::before { transform: rotate(90deg); }
     .section-title {
       font-size: 12px;
       font-weight: 600;
@@ -1174,6 +1185,51 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
       align-items: center;
       gap: 8px;
     }
+    .section-title.clickable { cursor: pointer; }
+    .section-title.clickable:hover { color: var(--vscode-foreground); }
+    .section-actions { margin-left: auto; display: flex; gap: 4px; }
+    .mini-btn {
+      font-size: 10px;
+      padding: 2px 6px;
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .mini-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+    .section-content { margin-top: 8px; }
+
+    .file-issues-group { margin: 8px 0; }
+    .file-issues-group > summary { list-style: none; cursor: pointer; }
+    .file-issues-group > summary::-webkit-details-marker { display: none; }
+    .file-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: var(--vscode-editor-inactiveSelectionBackground);
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .file-header:hover { background: var(--vscode-list-hoverBackground); }
+    .file-header::before {
+      content: '▼';
+      font-size: 8px;
+      color: var(--vscode-descriptionForeground);
+      transition: transform 0.2s;
+    }
+    .file-issues-group:not([open]) > .file-header::before { transform: rotate(-90deg); }
+    .file-icon { font-size: 11px; }
+    .file-path { flex: 1; color: var(--vscode-textLink-foreground); cursor: pointer; }
+    .file-path:hover { text-decoration: underline; }
+    .file-count { 
+      font-size: 10px;
+      background: var(--vscode-badge-background);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    .file-issues-list { margin-left: 20px; margin-top: 4px; }
     
     .card {
       background: var(--vscode-editor-inactiveSelectionBackground);
@@ -1202,13 +1258,58 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
       border-radius: 3px;
     }
     
-    .profile {
+    /* Source group (profiles grouped by config file) */
+    .source-group { margin: 12px 0; }
+    .source-group > summary { list-style: none; cursor: pointer; }
+    .source-group > summary::-webkit-details-marker { display: none; }
+    .source-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: var(--vscode-sideBarSectionHeader-background);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    .source-header:hover { background: var(--vscode-list-hoverBackground); }
+    .source-header::before {
+      content: '▼';
+      font-size: 8px;
+      color: var(--vscode-descriptionForeground);
+      transition: transform 0.2s;
+    }
+    .source-group:not([open]) > .source-header::before { transform: rotate(-90deg); }
+    .source-label {
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+      background: var(--vscode-badge-background);
+      padding: 2px 8px;
+      border-radius: 3px;
+    }
+    .source-path { 
+      flex: 1; 
+      color: var(--vscode-textLink-foreground); 
+      font-family: var(--vscode-editor-font-family);
+      cursor: pointer;
+    }
+    .source-path:hover { text-decoration: underline; }
+    .source-count { 
+      font-size: 10px; 
+      color: var(--vscode-descriptionForeground); 
+    }
+    .source-profiles { margin-left: 12px; margin-top: 6px; }
+
+    /* Profile card */
+    .profile-card {
       background: var(--vscode-editor-inactiveSelectionBackground);
       border-radius: 6px;
       margin: 6px 0;
       overflow: hidden;
+      cursor: pointer;
     }
-    .profile.highlighted {
+    .profile-card:hover { background: var(--vscode-list-hoverBackground); }
+    .profile-card.highlighted {
       box-shadow: 0 0 0 2px var(--vscode-focusBorder);
       animation: highlight-pulse 2s ease-out;
     }
@@ -1223,15 +1324,20 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
       padding: 8px 12px;
     }
     .profile-icon { font-size: 16px; }
-    .profile-link { display: flex; align-items: center; gap: 8px; cursor: pointer; flex: 1; }
-    .profile-link:hover .profile-name { text-decoration: underline; color: var(--vscode-textLink-foreground); }
-    .profile-name { font-weight: 600; }
+    .profile-name { font-weight: 600; flex: 1; }
+    .profile-name:hover { text-decoration: underline; color: var(--vscode-textLink-foreground); }
     .profile-type {
       font-size: 10px;
       background: var(--vscode-badge-background);
       color: var(--vscode-badge-foreground);
       padding: 2px 8px;
       border-radius: 10px;
+    }
+    .profile-inherits {
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      padding: 0 12px 8px 36px;
+      font-style: italic;
     }
     
     .test-btn-group { display: inline-flex; border-radius: 3px; overflow: hidden; }
@@ -1328,19 +1434,60 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
       font-size: 10px;
     }
     
-    .key-item {
-      background: var(--vscode-editor-background);
+    .cred-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--vscode-editor-inactiveSelectionBackground);
       border-radius: 4px;
-      padding: 10px;
-      margin: 6px 0;
+      margin: 4px 0;
+      font-size: 12px;
     }
-    .key-header { display: flex; align-items: center; gap: 8px; }
-    .key-icon { font-size: 16px; }
-    .key-name { font-weight: 600; flex: 1; }
-    .key-type { font-size: 10px; background: var(--vscode-badge-background); padding: 2px 6px; border-radius: 3px; }
-    .key-details { margin-top: 6px; font-size: 11px; display: flex; gap: 12px; }
-    .key-path { color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); }
-    .key-meta { color: var(--vscode-descriptionForeground); }
+    .cred-icon { font-size: 14px; }
+    .cred-name { font-weight: 500; flex: 1; }
+    .cred-badge { font-size: 10px; background: var(--vscode-badge-background); padding: 2px 8px; border-radius: 10px; }
+    .cred-meta { font-size: 10px; color: var(--vscode-descriptionForeground); }
+    .cred-hint {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      margin: 8px 0;
+      line-height: 1.5;
+    }
+    .cred-hint code {
+      background: var(--vscode-textCodeBlock-background);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 10px;
+    }
+    .cred-actions { margin: 10px 0; }
+    
+    .info-box {
+      background: var(--vscode-textBlockQuote-background);
+      border-left: 3px solid var(--vscode-textLink-foreground);
+      padding: 10px 12px;
+      margin: 10px 0;
+      font-size: 11px;
+      border-radius: 0 4px 4px 0;
+    }
+    .info-box code {
+      background: var(--vscode-textCodeBlock-background);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 10px;
+    }
+    .info-box .code-example {
+      display: block;
+      background: var(--vscode-editor-background);
+      padding: 6px 8px;
+      margin-top: 8px;
+      border-radius: 4px;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 10px;
+      color: var(--vscode-debugTokenExpression-string);
+    }
     
     .layer {
       margin: 8px 0;
@@ -1415,99 +1562,148 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
 
 function generateDashboardTab(data: DashboardData): string {
   const { diagnostics, profiles, connectionResults: connResults, highlightProfileName: highlightProfile } = data;
+  
+  const totalIssues = diagnostics.reduce((sum, d) => sum + d.diagnostics.length, 0);
 
   const issuesHtml = diagnostics.length > 0 
-    ? diagnostics.map(({file, diagnostics: diags}) => `
-        <div class="file-name" style="font-size: 11px; color: var(--vscode-textLink-foreground); margin: 8px 0 4px 0;">${escapeHtml(shortenPath(file))}</div>
-        ${diags.map(d => `
-          <div class="issue ${d.severity === 0 ? 'error' : 'warning'}"
-               onclick="openFile('${escapeHtml(file.replace(/\\/g, "\\\\"))}', ${d.range.start.line}, ${d.range.start.character})">
-            <span class="icon">${d.severity === 0 ? '❌' : '⚠️'}</span>
-            <span style="flex: 1;">${escapeHtml(d.message.split('\n')[0])}</span>
-            <span class="location">Ln ${d.range.start.line + 1}</span>
+    ? diagnostics.map(({file, diagnostics: diags}) => {
+        const errors = diags.filter(d => d.severity === 0).length;
+        const warnings = diags.filter(d => d.severity !== 0).length;
+        const summary = errors > 0 ? `${errors} error(s)` : `${warnings} warning(s)`;
+        return `
+        <details class="file-issues-group" open>
+          <summary class="file-header">
+            <span class="file-icon">${errors > 0 ? '❌' : '⚠️'}</span>
+            <span class="file-path" onclick="event.stopPropagation(); openFile('${escapeHtml(file.replace(/\\/g, "\\\\"))}', 0, 0)">${escapeHtml(shortenPath(file))}</span>
+            <span class="file-count">${summary}</span>
+          </summary>
+          <div class="file-issues-list">
+            ${diags.map(d => `
+              <div class="issue ${d.severity === 0 ? 'error' : 'warning'}"
+                   onclick="openFile('${escapeHtml(file.replace(/\\/g, "\\\\"))}', ${d.range.start.line}, ${d.range.start.character})">
+                <span class="icon">${d.severity === 0 ? '❌' : '⚠️'}</span>
+                <span style="flex: 1;">${escapeHtml(d.message.split('\n')[0])}</span>
+                <span class="location">Ln ${d.range.start.line + 1}</span>
+              </div>
+            `).join('')}
           </div>
-        `).join('')}
-      `).join('')
+        </details>
+      `;}).join('')
     : '<div class="no-items">✅ No issues found</div>';
 
+  // Group profiles by source file
+  const profilesBySource = new Map<string, typeof profiles>();
+  for (const p of profiles) {
+    const existing = profilesBySource.get(p.source) || [];
+    existing.push(p);
+    profilesBySource.set(p.source, existing);
+  }
+
+  // Determine layer type from path
+  const getLayerLabel = (source: string): string => {
+    const lower = source.toLowerCase();
+    if (lower.includes('.user.json')) {
+      return lower.includes('.zowe') ? 'Global User' : 'Project User';
+    }
+    return lower.includes('.zowe') ? 'Global' : 'Project';
+  };
+
   const profilesHtml = profiles.length > 0
-    ? profiles.map(p => {
-        const connResult = connResults.get(p.name);
-        const connStatusClass = connResult?.status === "success" ? "conn-success" 
-          : connResult?.status === "failed" ? "conn-failed" 
-          : connResult?.status === "testing" ? "conn-testing" : "";
+    ? Array.from(profilesBySource.entries()).map(([source, sourceProfiles]) => {
+        const layerLabel = getLayerLabel(source);
+        const escapedSourcePath = escapeHtml(source.replace(/\\/g, "\\\\"));
         
-        const canTest = ["ssh", "zosmf", "tso", "zftp"].includes(p.type);
-        const hasInherited = Object.keys(p.inherited).length > 0;
-        const escapedSource = escapeHtml(p.source.replace(/\\/g, "\\\\"));
-        const isHighlighted = highlightProfile && p.name === highlightProfile;
-        const escapedName = escapeHtml(p.name);
-        
-        return `
-          <div class="profile ${connStatusClass}${isHighlighted ? ' highlighted' : ''}" ${isHighlighted ? 'id="highlighted-profile"' : ''}>
-            <div class="profile-header">
-              <span class="profile-link" onclick="openProfile('${escapedSource}', '${escapedName}')">
+        const profileCards = sourceProfiles.map(p => {
+          const connResult = connResults.get(p.name);
+          const connStatusClass = connResult?.status === "success" ? "conn-success" 
+            : connResult?.status === "failed" ? "conn-failed" 
+            : connResult?.status === "testing" ? "conn-testing" : "";
+          
+          const canTest = ["ssh", "zosmf", "tso", "zftp"].includes(p.type);
+          const isHighlighted = highlightProfile && p.name === highlightProfile;
+          const escapedName = escapeHtml(p.name);
+          
+          // Find if this profile inherits from a different config file
+          const inheritedSources = new Set(Object.values(p.inherited).map(v => v.from));
+          const externalInheritance = Array.from(inheritedSources).filter(s => s !== source);
+          
+          return `
+            <div class="profile-card ${connStatusClass}${isHighlighted ? ' highlighted' : ''}" ${isHighlighted ? 'id="highlighted-profile"' : ''}
+                 onclick="openProfile('${escapedSourcePath}', '${escapedName}')">
+              <div class="profile-header">
                 <span class="profile-icon">${getProfileIcon(p.type)}</span>
                 <span class="profile-name">${escapedName}</span>
-              </span>
-              <span class="profile-type">${escapeHtml(p.type)}</span>
-              ${canTest ? `
-                <button class="test-btn" onclick="testConnection('${escapedName}', '${escapeHtml(p.type)}', false)" ${connResult?.status === "testing" ? "disabled" : ""}>
-                  ${connResult?.status === "testing" ? "⏳" : "Test"}
-                </button>
+                <span class="profile-type">${escapeHtml(p.type)}</span>
+                ${canTest ? `
+                  <button class="test-btn" onclick="event.stopPropagation(); testConnection('${escapedName}', '${escapeHtml(p.type)}', false)" ${connResult?.status === "testing" ? "disabled" : ""}>
+                    ${connResult?.status === "testing" ? "⏳" : "Test"}
+                  </button>
+                ` : ''}
+              </div>
+              ${externalInheritance.length > 0 ? `
+                <div class="profile-inherits">Inherits from: ${externalInheritance.map(s => escapeHtml(shortenPath(s))).join(', ')}</div>
+              ` : ''}
+              ${connResult ? `
+                <div class="conn-result ${connResult.status}">
+                  <span class="conn-icon">${connResult.status === "success" ? "✅" : connResult.status === "failed" ? "❌" : "⏳"}</span>
+                  <span style="flex: 1;">${escapeHtml(connResult.message)}</span>
+                  ${connResult.latency ? `<span class="conn-latency">${connResult.latency}ms</span>` : ''}
+                </div>
               ` : ''}
             </div>
-            ${connResult ? `
-              <div class="conn-result ${connResult.status}">
-                <span class="conn-icon">${connResult.status === "success" ? "✅" : connResult.status === "failed" ? "❌" : "⏳"}</span>
-                <span style="flex: 1;">${escapeHtml(connResult.message)}</span>
-                ${connResult.latency ? `<span class="conn-latency">${connResult.latency}ms</span>` : ''}
-              </div>
-            ` : ''}
-            ${hasInherited ? `
-              <details class="inherited-section">
-                <summary>Inherited (${Object.keys(p.inherited).length})</summary>
-                <div class="inherited-props">
-                  ${Object.entries(p.inherited).map(([key, val]) => `
-                    <div class="inherited-prop">
-                      <span class="prop-name">${escapeHtml(key)}</span>
-                      <span class="prop-value">${escapeHtml(formatValue(val.value))}</span>
-                      <span class="prop-from">← ${escapeHtml(val.from)}</span>
-                    </div>
-                  `).join('')}
-                </div>
-              </details>
-            ` : ''}
-          </div>
+          `;
+        }).join('');
+
+        return `
+          <details class="source-group" open>
+            <summary class="source-header">
+              <span class="source-label">${layerLabel}</span>
+              <span class="source-path" onclick="event.stopPropagation(); openFile('${escapedSourcePath}', 0, 0)">${escapeHtml(shortenPath(source))}</span>
+              <span class="source-count">${sourceProfiles.length} profile(s)</span>
+            </summary>
+            <div class="source-profiles">
+              ${profileCards}
+            </div>
+          </details>
         `;
       }).join('')
     : '<div class="no-items">No profiles defined</div>';
 
-  return `
+  const issuesSection = `
     <div class="section">
-      <div class="section-title">Issues</div>
+      <div class="section-title">Issues (${totalIssues})</div>
       ${issuesHtml}
     </div>
+  `;
+
+  const profilesSection = `
     <div class="section">
       <div class="section-title">Profiles (${profiles.length})</div>
       ${profilesHtml}
     </div>
   `;
+
+  return `${issuesSection}${profilesSection}`;
 }
 
 function generateEnvironmentTab(data: DashboardData): string {
   const { envChecks, extensions, zoweEnvVars } = data;
-  const hasZoweCli = envChecks.some(c => c.name === "Zowe CLI" && c.status === "pass");
 
-  const envHtml = envChecks.map(c => `
+  const envHtml = envChecks.map(c => {
+    const isZoweCli = c.name === "Zowe CLI";
+    const hasZoweCli = isZoweCli && c.status === "pass";
+    
+    return `
     <div class="env-item">
       <span class="env-icon">${c.status === 'pass' ? '✅' : c.status === 'fail' ? '❌' : c.status === 'warn' ? '⚠️' : '❓'}</span>
       <span class="env-name">${escapeHtml(c.name)}</span>
       <span class="env-value">${escapeHtml(c.value)}</span>
       ${c.details ? `<span class="env-details">${escapeHtml(c.details)}</span>` : ''}
-      ${c.action ? `<button class="inline-btn" onclick="runCommand('${escapeHtml(c.action.command)}')">${escapeHtml(c.action.label)}</button>` : ''}
+      ${c.action ? `<button class="copy-btn" onclick="runCommand('${escapeHtml(c.action.command)}')">${escapeHtml(c.action.label)}</button>` : ''}
+      ${hasZoweCli ? `<button class="copy-btn" onclick="updateCli()">Update</button>` : ''}
+      ${isZoweCli && !hasZoweCli ? `<button class="copy-btn" onclick="installCli()">Install</button>` : ''}
     </div>
-  `).join('');
+  `;}).join('');
 
   const setVars = zoweEnvVars.filter(v => v.value !== undefined);
   const envVarsHtml = setVars.length > 0
@@ -1548,13 +1744,6 @@ function generateEnvironmentTab(data: DashboardData): string {
       <div class="section-title">VS Code Extensions</div>
       ${extensionsHtml}
     </div>
-    <div style="margin-top: 16px;">
-      ${hasZoweCli 
-        ? '<button class="action-btn" onclick="updateCli()">Update Zowe CLI</button>'
-        : '<button class="action-btn" onclick="installCli()">Install Zowe CLI</button>'
-      }
-      <button class="action-btn" onclick="generateSshKey()">Generate SSH Key</button>
-    </div>
   `;
 }
 
@@ -1563,39 +1752,49 @@ function generateCredentialsTab(data: DashboardData): string {
 
   const keysHtml = sshKeys.length > 0
     ? sshKeys.map(key => `
-        <div class="key-item">
-          <div class="key-header">
-            <span class="key-icon">🔑</span>
-            <span class="key-name">${escapeHtml(key.name)}</span>
-            <span class="key-type">${escapeHtml(key.type)}</span>
-            ${key.hasPublicKey ? `<button class="copy-btn" onclick="copyPublicKey('${escapeHtml(key.path.replace(/\\/g, "\\\\"))}')">Copy Public Key</button>` : ''}
-          </div>
-          <div class="key-details">
-            <span class="key-path">${escapeHtml(key.path)}</span>
-            <span class="key-meta">${key.hasPublicKey ? '✅ Has public key' : '⚠️ No public key'}</span>
-          </div>
+        <div class="cred-item">
+          <span class="cred-icon">🔑</span>
+          <span class="cred-name">${escapeHtml(key.name)}</span>
+          <span class="cred-badge">${escapeHtml(key.type)}</span>
+          <span class="cred-meta">${key.hasPublicKey ? '✅ public key' : '⚠️ no public key'}</span>
+          ${key.hasPublicKey ? `<button class="copy-btn" onclick="copyPublicKey('${escapeHtml(key.path.replace(/\\/g, "\\\\"))}')">Copy</button>` : ''}
         </div>
       `).join('')
-    : '<div class="no-items">No SSH keys found in ~/.ssh</div>';
+    : '<div class="cred-item"><span class="cred-meta">No SSH keys found in ~/.ssh</span></div>';
 
   return `
     <div class="section">
       <div class="section-title">Credential Manager</div>
-      <div class="card">
-        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-          <span style="font-weight: 600;">${escapeHtml(credentialManager.name)}</span>
-          <span style="font-size: 10px; background: var(--vscode-badge-background); padding: 2px 8px; border-radius: 10px;">${escapeHtml(credentialManager.status)}</span>
-        </div>
-        <div style="font-size: 12px; color: var(--vscode-descriptionForeground);">${escapeHtml(credentialManager.details)}</div>
+      <div class="cred-item">
+        <span class="cred-icon">🔐</span>
+        <span class="cred-name">${escapeHtml(credentialManager.name)}</span>
+        <span class="cred-badge">${escapeHtml(credentialManager.status)}</span>
       </div>
+      <p class="cred-hint">Add property names to <code>secure</code> array to store them encrypted: <code>"secure": ["user", "password"]</code></p>
     </div>
     <div class="section">
       <div class="section-title">SSH Keys</div>
       ${keysHtml}
+      <div class="cred-actions">
+        <button class="action-btn" onclick="generateSshKey()">Generate New SSH Key</button>
+        <button class="action-btn secondary" onclick="openSshFolder()">Open ~/.ssh Folder</button>
+      </div>
+      <p class="cred-hint">Reference keys with <code>privateKey</code> property: <code>"privateKey": "~/.ssh/id_ed25519"</code></p>
     </div>
-    <div style="margin-top: 16px;">
-      <button class="action-btn" onclick="generateSshKey()">Generate New SSH Key</button>
-      <button class="action-btn secondary" onclick="openSshFolder()">Open ~/.ssh Folder</button>
+    <div class="section">
+      <div class="section-title">Client Certificates</div>
+      <p class="cred-hint">
+        For certificate-based auth, use <code>certFile</code> and <code>certKeyFile</code> properties:<br>
+        <code>"certFile": "/path/to/client.crt", "certKeyFile": "/path/to/client.key"</code>
+      </p>
+    </div>
+    <div class="section">
+      <div class="section-title">API Tokens</div>
+      <p class="cred-hint">
+        For APIML authentication, use <code>tokenType</code> and <code>tokenValue</code>:<br>
+        <code>"tokenType": "apimlAuthenticationToken", "secure": ["tokenValue"]</code><br>
+        <span style="font-size: 10px;">Obtain tokens via <code>zowe auth login apiml</code></span>
+      </p>
     </div>
   `;
 }
@@ -1648,16 +1847,6 @@ function getProfileIcon(type: string): string {
     case "db2": return "🗄️";
     default: return "▪️";
   }
-}
-
-function formatValue(value: unknown): string {
-  if (typeof value === "string") {
-    if (value.length > 30) return `"${value.substring(0, 27)}..."`;
-    return `"${value}"`;
-  }
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (value === null) return "null";
-  return JSON.stringify(value);
 }
 
 function shortenPath(path: string): string {

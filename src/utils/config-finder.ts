@@ -15,45 +15,19 @@ import type { ConfigLayer, ZoweConfig } from "../types.js";
 const CONFIG_FILE_NAME = "zowe.config.json";
 const USER_CONFIG_FILE_NAME = "zowe.config.user.json";
 
-// These are the ONLY file names that Zowe CLI actually reads
-const ACTIVE_CONFIG_NAMES = [
-  "zowe.config.json",
-  "zowe.config.user.json",
-];
+const ACTIVE_CONFIG_NAMES = ["zowe.config.json", "zowe.config.user.json"];
 
-export function getZoweHomePath(): string {
+function getZoweHomePath(): string {
   return process.env.ZOWE_CLI_HOME || join(homedir(), ".zowe");
 }
 
-/**
- * Check if a file is an ACTIVE Zowe config (one that Zowe CLI will actually read).
- * This excludes copies, backups, or files with extra text in the name.
- */
-export function isActiveZoweConfig(fileName: string): boolean {
-  const baseName = fileName.split(/[/\\]/).pop() || "";
-  return ACTIVE_CONFIG_NAMES.includes(baseName);
-}
-
-/**
- * Check if a file looks like a Zowe config (for validation purposes).
- * This is more permissive - includes copies/backups so we can still validate them if opened.
- */
 export function isZoweConfigFile(fileName: string): boolean {
   const baseName = fileName.split(/[/\\]/).pop() || "";
-  
-  // Exact match for standard names
   if (ACTIVE_CONFIG_NAMES.includes(baseName)) {
     return true;
   }
-  
-  // Also match any file with "zowe" and "config" in the name (covers edge cases)
-  // This allows validation of copies/backups if the user manually opens them
   const lowerName = baseName.toLowerCase();
-  if (lowerName.includes("zowe") && lowerName.includes("config") && lowerName.endsWith(".json")) {
-    return true;
-  }
-  
-  return false;
+  return lowerName.includes("zowe") && lowerName.includes("config") && lowerName.endsWith(".json");
 }
 
 export function findConfigLayers(cwd: string): ConfigLayer[] {
@@ -118,14 +92,6 @@ export function loadConfigFile(filePath: string): ZoweConfig | null {
   }
 }
 
-export function parseConfigContent(content: string): ZoweConfig | null {
-  try {
-    return parseJsonc(content) as unknown as ZoweConfig;
-  } catch {
-    return null;
-  }
-}
-
 function extractProfileNames(
   profiles: Record<string, unknown>,
   prefix = ""
@@ -152,16 +118,4 @@ function extractProfileNames(
   }
 
   return names;
-}
-
-export function findFirstExistingConfig(cwd: string): string | null {
-  const layers = findConfigLayers(cwd);
-  const existingLayers = layers.filter((l) => l.exists && !l.userConfig);
-
-  if (existingLayers.length > 0) {
-    const projectLayer = existingLayers.find((l) => l.type === "project");
-    return projectLayer?.path || existingLayers[0].path;
-  }
-
-  return null;
 }

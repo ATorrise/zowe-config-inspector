@@ -42,36 +42,6 @@
         "icon": "$(dashboard)"
       },
       {
-        "command": "zoweInspector.checkConfig",
-        "title": "Validate Configuration",
-        "icon": "$(check)"
-      },
-      {
-        "command": "zoweInspector.showLayers",
-        "title": "Show Config Layers",
-        "icon": "$(layers)"
-      },
-      {
-        "command": "zoweInspector.showCredentials",
-        "title": "Credentials & SSH Keys",
-        "icon": "$(key)"
-      },
-      {
-        "command": "zoweInspector.checkEnvironment",
-        "title": "Check Environment",
-        "icon": "$(versions)"
-      },
-      {
-        "command": "zoweInspector.generateSshKey",
-        "title": "Generate SSH Key",
-        "icon": "$(add)"
-      },
-      {
-        "command": "zoweInspector.updateCli",
-        "title": "Update Zowe CLI",
-        "icon": "$(cloud-download)"
-      },
-      {
         "command": "zoweInspector.validateProfile",
         "title": "Inspect Profile",
         "icon": "$(search)"
@@ -81,30 +51,6 @@
       "commandPalette": [
         {
           "command": "zoweInspector.showDashboard"
-        },
-        {
-          "command": "zoweInspector.checkConfig",
-          "when": "false"
-        },
-        {
-          "command": "zoweInspector.showLayers",
-          "when": "false"
-        },
-        {
-          "command": "zoweInspector.showCredentials",
-          "when": "false"
-        },
-        {
-          "command": "zoweInspector.checkEnvironment",
-          "when": "false"
-        },
-        {
-          "command": "zoweInspector.generateSshKey",
-          "when": "false"
-        },
-        {
-          "command": "zoweInspector.updateCli",
-          "when": "false"
         },
         {
           "command": "zoweInspector.validateProfile",
