@@ -80,7 +80,7 @@ All other features (validation, environment check, credentials, SSH key generati
 
 ### Context Menus
 
-Right-click on any `zowe.config.json` file in the Editor or Explorer to open the Dashboard.
+Right-click on any `zowe.config.json` file in the file explorer or an open tab to open the Dashboard.
 
 Right-click on a profile/session node in Zowe Explorer's Data Sets, USS, or Jobs tree to select "Inspect Profile" (not available on favorites).
 

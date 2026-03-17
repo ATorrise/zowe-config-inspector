@@ -13,7 +13,7 @@ export async function validateCurrentFile(diagnosticsProvider: ZoweConfigDiagnos
   const editor = vscode.window.activeTextEditor;
 
   if (!editor) {
-    vscode.window.showWarningMessage("No active editor. Open a zowe.config.json file to validate.");
+    vscode.window.showWarningMessage("No file open. Open a zowe.config.json file to validate.");
     return;
   }
 

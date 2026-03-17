@@ -14,7 +14,7 @@ const PROPERTY_DOCS: Record<string, Record<string, string>> = {
     profiles: "Contains all connection profile definitions. Profiles define how to connect to z/OS systems.",
     defaults: "Maps profile types to default profile names. When no profile is specified, the default is used.",
     autoStore: "When true, Zowe CLI will automatically store credentials in the secure credential store.",
-    $schema: "URL or path to the JSON schema for validation and editor autocompletion.",
+    $schema: "URL or path to the JSON schema for validation and autocompletion.",
   },
   profile: {
     type: "The profile type (e.g., 'ssh', 'zosmf', 'base'). Determines which properties are valid.",
