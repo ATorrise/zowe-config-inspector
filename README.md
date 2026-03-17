@@ -20,26 +20,30 @@ As you edit `zowe.config.json`, errors and warnings appear immediately with red 
 Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensive diagnostic view with tabbed navigation:
 
 **Dashboard Tab:**
-- **Issues Overview** - Clickable errors and warnings that jump to the exact location
+- **Issues Overview** - Clickable  errors and warnings that jump to the exact location
 - **Profile Cards** - All your configured profiles with connection test buttons
 - **Connection Testing** - Test SSH and z/OSMF connectivity with latency display
 - **Inheritance Visualization** - See which properties are inherited from parent profiles
+![Dashboard](<resources/ZCI-errors across profile layers.png>)
 
 **Environment Tab:**
 - System status: Node.js, Zowe CLI (with Update button), ZOWE_CLI_HOME, Credential Manager, SSH Keys
 - Zowe environment variables - view set variables, add new ones from curated list
 - Installed Zowe-related VS Code extensions (with Update buttons)
+![Environment Tab](<resources/ZCI-env tab.png>)
 
 **Credentials Tab:**
 - View all SSH keys in `~/.ssh`
 - Check credential manager status (Windows/macOS/Linux)
 - Copy public keys to clipboard
 - Generate new SSH keys (Ed25519, RSA, ECDSA)
+![Credentials Tab](<resources/ZCI-creds tab.png>)
 
 **Layers Tab:**
 - All configuration files (global, project, user) with priority ordering
 - Which profiles are defined where
 - Override detection - see which layer "wins" when there are conflicts
+![Layers Tab](<resources/ZCI-layers tab.png>)
 
 ## Installation
 
