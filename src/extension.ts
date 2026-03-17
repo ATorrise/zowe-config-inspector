@@ -7,7 +7,7 @@
  */
 
 import * as vscode from "vscode";
-import { showDashboard, showDashboardForProfile } from "./commands/dashboard.js";
+import { showDashboard, showDashboardForProfile, disposeTerminal } from "./commands/dashboard.js";
 import { ZoweConfigDiagnosticsProvider } from "./providers/diagnostics-provider.js";
 import { registerHoverProvider } from "./providers/hover-provider.js";
 import { StatusBarProvider } from "./providers/status-bar-provider.js";
@@ -98,12 +98,15 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  // Dispose all resources
   if (diagnosticsProvider) {
     diagnosticsProvider.dispose();
   }
   if (statusBarProvider) {
     statusBarProvider.dispose();
   }
+  // Clean up any terminal created by the extension
+  disposeTerminal();
 }
 
 /**

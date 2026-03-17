@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: EPL-2.0
  */
 
-import { execSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -61,29 +60,30 @@ export function getNodeVersionCheck(): EnvironmentCheck {
 }
 
 export function getZoweCliVersionCheck(): EnvironmentCheck {
-  try {
-    const output = execSync("zowe --version", { 
-      encoding: "utf-8",
-      timeout: 5000,
-      stdio: ["pipe", "pipe", "pipe"]
-    }).trim();
-    
+  // Check if Zowe CLI exists by looking for config files instead of running a command
+  // This avoids spawning any processes
+  const zoweHome = process.env.ZOWE_CLI_HOME || join(homedir(), ".zowe");
+  const hasZoweConfig = existsSync(join(zoweHome, "zowe.config.json")) || 
+                        existsSync(join(zoweHome, "zowe.config.user.json"));
+  
+  if (hasZoweConfig) {
     return {
       name: "Zowe CLI",
       status: "pass",
-      value: `v${output}`,
-    };
-  } catch {
-    return {
-      name: "Zowe CLI",
-      status: "warn",
-      value: "Not installed",
-      action: {
-        label: "Install",
-        command: "npm install -g @zowe/cli",
-      },
+      value: "Installed",
     };
   }
+  
+  return {
+    name: "Zowe CLI",
+    status: "warn",
+    value: "Not detected",
+    details: "No zowe.config.json found",
+    action: {
+      label: "Install",
+      command: "npm install -g @zowe/cli",
+    },
+  };
 }
 
 export function getZoweExplorerVersionCheck(): EnvironmentCheck {
@@ -133,13 +133,9 @@ export function getCredentialManagerCheck(): EnvironmentCheck {
       };
       break;
     case "linux":
+      // Don't spawn a process to check - just assume it might be there
       managerName = "libsecret";
-      try {
-        execSync("which secret-tool", { stdio: ["pipe", "pipe", "pipe"] });
-      } catch {
-        status = "warn";
-        details = "libsecret may not be installed";
-      }
+      details = "Ensure gnome-keyring is installed";
       break;
     default:
       managerName = "Unknown";
@@ -158,7 +154,6 @@ export function getCredentialManagerCheck(): EnvironmentCheck {
 
 export function getSshKeysCheck(): EnvironmentCheck[] {
   const sshDir = join(homedir(), ".ssh");
-  const checks: EnvironmentCheck[] = [];
   
   if (!existsSync(sshDir)) {
     return [{
@@ -171,17 +166,14 @@ export function getSshKeysCheck(): EnvironmentCheck[] {
   
   try {
     const files = readdirSync(sshDir);
-    // Find private keys (files without .pub extension that have a matching .pub file, or known key names)
     const knownKeyNames = ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"];
     const privateKeys: string[] = [];
     
     for (const file of files) {
-      // Skip public keys and config files
       if (file.endsWith(".pub") || file === "known_hosts" || file === "config" || file === "authorized_keys") {
         continue;
       }
       
-      // Check if it's a known key name or has a matching .pub file
       if (knownKeyNames.includes(file) || files.includes(`${file}.pub`)) {
         privateKeys.push(file);
       }
@@ -199,13 +191,12 @@ export function getSshKeysCheck(): EnvironmentCheck[] {
       }];
     }
     
-    // Return each key as a separate check
-    return privateKeys.map((key, index) => ({
-      name: index === 0 ? "SSH Keys" : "",
-      status: "pass" as const,
-      value: key,
-      details: existsSync(join(sshDir, `${key}.pub`)) ? "has public key" : undefined,
-    }));
+    // Just show count, not each key
+    return [{
+      name: "SSH Keys",
+      status: "pass",
+      value: `${privateKeys.length} key(s) found`,
+    }];
   } catch {
     return [{
       name: "SSH Keys",

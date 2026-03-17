@@ -34,7 +34,6 @@ Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensiv
 - ZOWE_CLI_HOME location
 - Zowe environment variables - view set variables, add new ones from curated list
 - Installed Zowe-related VS Code extensions
-- Global npm packages
 - Update Zowe CLI and Generate SSH Key buttons
 
 **Credentials Tab:**
@@ -184,6 +183,18 @@ npm run compile
 # Package as VSIX
 npm run package
 ```
+
+## Technical Notes
+
+### Process Management
+
+This extension is designed to minimize resource usage:
+
+- **No background processes** - The extension does not spawn long-running processes or poll external commands
+- **Single reusable terminal** - All CLI operations (Zowe CLI updates, SSH key generation, environment variable setup) use a single managed VS Code terminal that is reused and properly disposed
+- **Lazy loading** - Data is only loaded when the relevant Dashboard tab is active
+- **Caching** - Expensive operations like listing extensions are cached and reused
+- **No automatic CLI calls** - The extension detects Zowe CLI installation by checking for config files rather than running `zowe --version`
 
 ## Contributing
 

@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: EPL-2.0
  */
 
-import { execSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +15,56 @@ import { findConfigLayers, isActiveZoweConfig, isZoweConfigFile, loadConfigFile 
 import { getAllEnvironmentChecks, type EnvironmentCheck } from "../utils/environment-checks.js";
 
 let dashboardPanel: vscode.WebviewPanel | undefined;
+
+// ============== Terminal Management ==============
+// Reuse a single terminal for all operations to avoid spawning many processes
+let inspectorTerminal: vscode.Terminal | undefined;
+let terminalCloseListener: vscode.Disposable | undefined;
+
+/**
+ * Get or create the inspector terminal. Reuses existing terminal if available.
+ */
+function getOrCreateTerminal(): vscode.Terminal {
+  // Check if our terminal still exists
+  if (inspectorTerminal) {
+    // Verify it's still in the list of open terminals
+    const stillExists = vscode.window.terminals.includes(inspectorTerminal);
+    if (stillExists) {
+      return inspectorTerminal;
+    }
+    // Terminal was closed, clear reference
+    inspectorTerminal = undefined;
+  }
+  
+  // Create new terminal
+  inspectorTerminal = vscode.window.createTerminal("Zowe Inspector");
+  
+  // Listen for terminal close to clean up reference
+  if (!terminalCloseListener) {
+    terminalCloseListener = vscode.window.onDidCloseTerminal((closedTerminal) => {
+      if (closedTerminal === inspectorTerminal) {
+        inspectorTerminal = undefined;
+      }
+    });
+  }
+  
+  return inspectorTerminal;
+}
+
+/**
+ * Dispose of the inspector terminal if it exists.
+ * Call this when the extension is deactivated or dashboard is closed.
+ */
+export function disposeTerminal(): void {
+  if (inspectorTerminal) {
+    inspectorTerminal.dispose();
+    inspectorTerminal = undefined;
+  }
+  if (terminalCloseListener) {
+    terminalCloseListener.dispose();
+    terminalCloseListener = undefined;
+  }
+}
 
 // Connection test results storage
 const connectionResults = new Map<string, { 
@@ -36,10 +85,9 @@ let updatePending = false;
 let lastUpdateTime = 0;
 const UPDATE_THROTTLE_MS = 500;
 
-// Cache for expensive operations (refresh every 30 seconds)
-let cachedNpmPackages: Array<{ name: string; version: string }> | null = null;
+// Cache for extensions list (refresh every 30 seconds)
 let cachedExtensions: Array<{ id: string; name: string; version: string; isActive: boolean }> | null = null;
-let cacheTime = 0;
+let extensionsCacheTime = 0;
 const CACHE_TTL_MS = 30000;
 
 // Zowe environment variables definitions
@@ -103,6 +151,8 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
 
   dashboardPanel.onDidDispose(() => {
     dashboardPanel = undefined;
+    // Dispose terminal when dashboard closes to free up resources
+    disposeTerminal();
   });
 
   dashboardPanel.webview.onDidReceiveMessage(async (message) => {
@@ -132,19 +182,18 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
       
       case "refresh":
         // Clear cache and force full refresh
-        cachedNpmPackages = null;
         cachedExtensions = null;
-        cacheTime = 0;
+        extensionsCacheTime = 0;
         if (dashboardPanel) {
           updateDashboardContent(dashboardPanel, workspaceFolder, true);
         }
         break;
         
       case "openTerminal":
-        const terminal = vscode.window.createTerminal("Zowe Inspector");
-        terminal.show();
+        const openTerm = getOrCreateTerminal();
+        openTerm.show();
         if (message.cmd) {
-          terminal.sendText(message.cmd);
+          openTerm.sendText(message.cmd);
         }
         break;
       
@@ -152,13 +201,11 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
         if (message.cmd.startsWith("ext install ")) {
           const extId = message.cmd.replace("ext install ", "");
           vscode.commands.executeCommand("workbench.extensions.installExtension", extId);
-        } else if (message.cmd.includes("CredentialManager") || message.cmd.includes("Keychain")) {
-          const { exec } = await import("node:child_process");
-          exec(message.cmd);
         } else {
-          const cmdTerminal = vscode.window.createTerminal("Zowe Inspector");
-          cmdTerminal.show();
-          cmdTerminal.sendText(message.cmd);
+          // Show command in terminal instead of executing directly
+          const cmdTerm = getOrCreateTerminal();
+          cmdTerm.show();
+          cmdTerm.sendText(message.cmd);
         }
         break;
         
@@ -367,45 +414,13 @@ async function testProfileConnection(profileName: string, profileType: string, w
   }
 }
 
-async function testSshConnection(profileName: string, props: Record<string, unknown>, withAuth: boolean): Promise<void> {
+async function testSshConnection(profileName: string, props: Record<string, unknown>, _withAuth: boolean): Promise<void> {
   const host = String(props.host).replace(/^https?:\/\//, "");
   const port = Number(props.port) || 22;
   const startTime = Date.now();
 
-  if (withAuth) {
-    const user = props.user as string | undefined;
-    const privateKey = props.privateKey as string | undefined;
-    
-    if (!user) {
-      connectionResults.set(profileName, { status: "failed", message: "No user configured for auth test", timestamp: Date.now() });
-      return;
-    }
-    
-    const keyOpt = privateKey ? ` -i "${privateKey}"` : "";
-    const sshCmd = `ssh -o ConnectTimeout=15 -o BatchMode=yes -o StrictHostKeyChecking=no${keyOpt} ${user}@${host} -p ${port} echo "ok"`;
-    
-    try {
-      const { exec } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const execAsync = promisify(exec);
-      
-      await execAsync(sshCmd, { timeout: 20000 });
-      
-      const latency = Date.now() - startTime;
-      connectionResults.set(profileName, { status: "success", message: `SSH auth successful as ${user}`, latency, timestamp: Date.now() });
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      let friendlyMsg = `SSH auth failed`;
-      
-      if (errMsg.includes("Permission denied")) friendlyMsg = "Auth failed: Permission denied (check key/password)";
-      else if (errMsg.includes("Connection refused")) friendlyMsg = "Auth failed: Connection refused";
-      else if (errMsg.includes("timed out") || errMsg.includes("ETIMEDOUT")) friendlyMsg = "Auth failed: Connection timed out";
-      
-      connectionResults.set(profileName, { status: "failed", message: friendlyMsg, timestamp: Date.now() });
-    }
-    return;
-  }
-
+  // Only do basic connectivity test (no process spawning)
+  // Auth tests would require spawning ssh which can leave orphan processes
   try {
     const net = await import("node:net");
     
@@ -414,11 +429,11 @@ async function testSshConnection(profileName: string, props: Record<string, unkn
       const timeout = setTimeout(() => { socket.destroy(); reject(new Error("Connection timed out (5s)")); }, 5000);
 
       socket.connect(port, host, () => { clearTimeout(timeout); socket.destroy(); resolve(); });
-      socket.on("error", (err) => { clearTimeout(timeout); reject(err); });
+      socket.on("error", (err) => { clearTimeout(timeout); socket.destroy(); reject(err); });
     });
 
     const latency = Date.now() - startTime;
-    connectionResults.set(profileName, { status: "success", message: `Port ${port} reachable`, latency, timestamp: Date.now() });
+    connectionResults.set(profileName, { status: "success", message: `SSH port ${port} reachable`, latency, timestamp: Date.now() });
   } catch (error) {
     connectionResults.set(profileName, { 
       status: "failed", 
@@ -428,7 +443,7 @@ async function testSshConnection(profileName: string, props: Record<string, unkn
   }
 }
 
-async function testZosmfConnection(profileName: string, props: Record<string, unknown>, withAuth: boolean): Promise<void> {
+async function testZosmfConnection(profileName: string, props: Record<string, unknown>, _withAuth: boolean): Promise<void> {
   const host = String(props.host).replace(/^https?:\/\//, "");
   const port = Number(props.port) || 443;
   const protocol = String(props.protocol || "https");
@@ -436,32 +451,7 @@ async function testZosmfConnection(profileName: string, props: Record<string, un
   const rejectUnauthorized = props.rejectUnauthorized !== false;
   const startTime = Date.now();
 
-  if (withAuth) {
-    const zoweCmd = `zowe zosmf check status --host "${host}" --port ${port} --ru ${rejectUnauthorized}`;
-    
-    try {
-      const { exec } = await import("node:child_process");
-      const { promisify } = await import("node:util");
-      const execAsync = promisify(exec);
-      
-      const { stdout } = await execAsync(zoweCmd, { timeout: 30000 });
-      const latency = Date.now() - startTime;
-      const versionMatch = stdout.match(/zos_version:\s*(\S+)/);
-      const version = versionMatch ? ` (z/OS ${versionMatch[1]})` : "";
-      
-      connectionResults.set(profileName, { status: "success", message: `z/OSMF auth successful${version}`, latency, timestamp: Date.now() });
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      let friendlyMsg = "z/OSMF auth failed";
-      
-      if (errMsg.includes("401") || errMsg.includes("Unauthorized")) friendlyMsg = "Auth failed: Invalid credentials or expired token";
-      else if (errMsg.includes("certificate")) friendlyMsg = "Auth failed: Certificate error (try rejectUnauthorized: false)";
-      
-      connectionResults.set(profileName, { status: "failed", message: friendlyMsg, timestamp: Date.now() });
-    }
-    return;
-  }
-
+  // Only do basic HTTP connectivity test (no process spawning)
   const url = `${protocol}://${host}:${port}${basePath}/info`;
 
   try {
@@ -471,6 +461,7 @@ async function testZosmfConnection(profileName: string, props: Record<string, un
 
     await new Promise<void>((resolve, reject) => {
       const req = client.request(url, { method: "GET", timeout: 10000, rejectUnauthorized }, (res) => {
+        res.resume(); // Consume response to free up memory
         if (res.statusCode && res.statusCode < 500) resolve();
         else reject(new Error(`HTTP ${res.statusCode}`));
       });
@@ -571,10 +562,10 @@ async function updateZoweCli(): Promise<void> {
   );
   if (choice !== "Update Zowe CLI") return;
 
-  const terminal = vscode.window.createTerminal("Zowe CLI Update");
-  terminal.show();
-  terminal.sendText("npm update -g @zowe/cli");
-  terminal.sendText("echo 'Update complete. Run: zowe --version'");
+  const term = getOrCreateTerminal();
+  term.show();
+  term.sendText("npm update -g @zowe/cli");
+  term.sendText("echo 'Update complete. Run: zowe --version'");
 }
 
 async function installZoweCli(): Promise<void> {
@@ -584,10 +575,10 @@ async function installZoweCli(): Promise<void> {
   );
   if (choice !== "Install Zowe CLI") return;
 
-  const terminal = vscode.window.createTerminal("Zowe CLI Install");
-  terminal.show();
-  terminal.sendText("npm install -g @zowe/cli");
-  terminal.sendText("echo 'Installation complete. Run: zowe --version'");
+  const term = getOrCreateTerminal();
+  term.show();
+  term.sendText("npm install -g @zowe/cli");
+  term.sendText("echo 'Installation complete. Run: zowe --version'");
 }
 
 async function addEnvironmentVariable(): Promise<void> {
@@ -626,24 +617,24 @@ async function addEnvironmentVariable(): Promise<void> {
 
   if (!isPermanent) return;
 
-  const terminal = vscode.window.createTerminal("Set Environment Variable");
-  terminal.show();
+  const term = getOrCreateTerminal();
+  term.show();
 
   if (isWindows) {
     if (isPermanent.value === "permanent") {
-      terminal.sendText(`setx ${selected.envVar.name} "${newValue}"`);
-      terminal.sendText(`echo "Environment variable set permanently. Restart VS Code for changes to take effect."`);
+      term.sendText(`setx ${selected.envVar.name} "${newValue}"`);
+      term.sendText(`echo "Environment variable set permanently. Restart VS Code for changes to take effect."`);
     } else {
-      terminal.sendText(`set ${selected.envVar.name}=${newValue}`);
+      term.sendText(`set ${selected.envVar.name}=${newValue}`);
     }
   } else {
     if (isPermanent.value === "permanent") {
       const shell = process.env.SHELL || "/bin/bash";
       const rcFile = shell.includes("zsh") ? "~/.zshrc" : "~/.bashrc";
-      terminal.sendText(`echo 'export ${selected.envVar.name}="${newValue}"' >> ${rcFile}`);
-      terminal.sendText(`source ${rcFile}`);
+      term.sendText(`echo 'export ${selected.envVar.name}="${newValue}"' >> ${rcFile}`);
+      term.sendText(`source ${rcFile}`);
     } else {
-      terminal.sendText(`export ${selected.envVar.name}="${newValue}"`);
+      term.sendText(`export ${selected.envVar.name}="${newValue}"`);
     }
   }
 }
@@ -669,34 +660,6 @@ function getZoweRelatedExtensions(): Array<{ id: string; name: string; version: 
     }
   }
   return extensions.sort((a, b) => a.name.localeCompare(b.name));
-}
-
-function getNpmGlobalPackagesCached(): Array<{ name: string; version: string }> {
-  // Return cached if available
-  if (cachedNpmPackages) {
-    return cachedNpmPackages;
-  }
-  
-  const packages: Array<{ name: string; version: string }> = [];
-  try {
-    // Use a shorter timeout and don't block
-    const output = execSync("npm list -g --depth=0 --json", { 
-      encoding: "utf-8", 
-      timeout: 5000, 
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true 
-    });
-    const parsed = JSON.parse(output);
-    const deps = parsed.dependencies || {};
-    for (const [name, info] of Object.entries(deps)) {
-      if (name.includes("zowe") || name.includes("@brightside")) {
-        packages.push({ name, version: (info as { version?: string }).version || "unknown" });
-      }
-    }
-  } catch { 
-    // Return empty on error - don't block UI
-  }
-  return packages;
 }
 
 function getZoweEnvVars(): Array<{ name: string; value: string | undefined; description: string; category: string }> {
@@ -743,13 +706,13 @@ async function generateSshKey(): Promise<void> {
     default: cmd = `ssh-keygen -f "${keyPath}"`;
   }
 
-  const terminal = vscode.window.createTerminal("SSH Key Generator");
-  terminal.show();
-  terminal.sendText(`echo "Run this command to generate your SSH key:"`);
-  terminal.sendText(`echo "${cmd}"`);
-  terminal.sendText(`echo ""`);
-  terminal.sendText(`echo "After generating, copy the public key to your mainframe with:"`);
-  terminal.sendText(`echo "ssh-copy-id -i ${keyPath}.pub user@hostname"`);
+  const term = getOrCreateTerminal();
+  term.show();
+  term.sendText(`echo "Run this command to generate your SSH key:"`);
+  term.sendText(`echo "${cmd}"`);
+  term.sendText(`echo ""`);
+  term.sendText(`echo "After generating, copy the public key to your mainframe with:"`);
+  term.sendText(`echo "ssh-copy-id -i ${keyPath}.pub user@hostname"`);
 
   vscode.window.showInformationMessage(`SSH key generation command shown in terminal.`);
 }
@@ -914,7 +877,6 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
   // Lazy load expensive data only when needed for active tab
   let envChecks: EnvironmentCheck[] = [];
   let extensions: Array<{ id: string; name: string; version: string; isActive: boolean }> = [];
-  let npmPackages: Array<{ name: string; version: string }> = [];
   let zoweEnvVars: Array<{ name: string; value: string | undefined; description: string; category: string }> = [];
   let sshKeys: SshKeyInfo[] = [];
   let credentialManager = { name: "", status: "", details: "" };
@@ -926,16 +888,13 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
   }
   
   if (activeTab === "environment") {
-    // Use cached values if available
-    if (cachedExtensions && cachedNpmPackages && now - cacheTime < CACHE_TTL_MS) {
+    // Use cached extensions list if available
+    if (cachedExtensions && now - extensionsCacheTime < CACHE_TTL_MS) {
       extensions = cachedExtensions;
-      npmPackages = cachedNpmPackages;
     } else {
       extensions = getZoweRelatedExtensions();
-      npmPackages = getNpmGlobalPackagesCached();
       cachedExtensions = extensions;
-      cachedNpmPackages = npmPackages;
-      cacheTime = now;
+      extensionsCacheTime = now;
     }
     zoweEnvVars = getZoweEnvVars();
   }
@@ -960,7 +919,6 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
     connectionResults,
     highlightProfileName,
     extensions,
-    npmPackages,
     zoweEnvVars,
     sshKeys,
     credentialManager,
@@ -1008,7 +966,6 @@ interface DashboardData {
   connectionResults: Map<string, { status: string; message: string; latency?: number; timestamp: number }>;
   highlightProfileName: string | null;
   extensions: Array<{ id: string; name: string; version: string; isActive: boolean }>;
-  npmPackages: Array<{ name: string; version: string }>;
   zoweEnvVars: Array<{ name: string; value: string | undefined; description: string; category: string }>;
   sshKeys: SshKeyInfo[];
   credentialManager: { name: string; status: string; details: string };
@@ -1369,12 +1326,9 @@ function generateDashboardTab(data: DashboardData): string {
               </span>
               <span class="profile-type">${escapeHtml(p.type)}</span>
               ${canTest ? `
-                <div class="test-btn-group">
-                  <button class="test-btn" onclick="testConnection('${escapedName}', '${escapeHtml(p.type)}', false)" ${connResult?.status === "testing" ? "disabled" : ""}>
-                    ${connResult?.status === "testing" ? "⏳" : "Test"}
-                  </button>
-                  <button class="test-btn-auth" onclick="testConnection('${escapedName}', '${escapeHtml(p.type)}', true)" ${connResult?.status === "testing" ? "disabled" : ""}>🔐</button>
-                </div>
+                <button class="test-btn" onclick="testConnection('${escapedName}', '${escapeHtml(p.type)}', false)" ${connResult?.status === "testing" ? "disabled" : ""}>
+                  ${connResult?.status === "testing" ? "⏳" : "Test"}
+                </button>
               ` : ''}
             </div>
             ${connResult ? `
@@ -1416,7 +1370,7 @@ function generateDashboardTab(data: DashboardData): string {
 }
 
 function generateEnvironmentTab(data: DashboardData): string {
-  const { envChecks, extensions, npmPackages, zoweEnvVars } = data;
+  const { envChecks, extensions, zoweEnvVars } = data;
   const hasZoweCli = envChecks.some(c => c.name === "Zowe CLI" && c.status === "pass");
 
   const envHtml = envChecks.map(c => `
@@ -1450,15 +1404,6 @@ function generateEnvironmentTab(data: DashboardData): string {
       `).join('')
     : '<div class="no-items">No Zowe-related extensions found</div>';
 
-  const packagesHtml = npmPackages.length > 0
-    ? npmPackages.map(pkg => `
-        <div class="env-item">
-          <span class="env-name">${escapeHtml(pkg.name)}</span>
-          <span class="env-value">v${escapeHtml(pkg.version)}</span>
-        </div>
-      `).join('')
-    : '<div class="no-items">No Zowe packages found globally</div>';
-
   return `
     <div class="section">
       <div class="section-title">System</div>
@@ -1474,10 +1419,6 @@ function generateEnvironmentTab(data: DashboardData): string {
     <div class="section">
       <div class="section-title">VS Code Extensions</div>
       ${extensionsHtml}
-    </div>
-    <div class="section">
-      <div class="section-title">Global NPM Packages</div>
-      ${packagesHtml}
     </div>
     <div style="margin-top: 16px;">
       ${hasZoweCli 
