@@ -2,8 +2,6 @@
 
 A diagnostic tool for Zowe CLI - validate configurations, analyze inheritance, check credentials, test connections, and troubleshoot your mainframe development environment.
 
-![Demo](resources/demo.gif)
-
 ## Features
 
 ### Real-Time Validation
@@ -20,49 +18,54 @@ As you edit `zowe.config.json`, errors and warnings appear immediately with red 
 Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensive diagnostic view with tabbed navigation:
 
 **Dashboard Tab:**
-- **Issues Overview** - Clickable  errors and warnings that jump to the exact location
-- **Profile Cards** - All your configured profiles with connection test buttons
-- **Connection Testing** - Test SSH and z/OSMF connectivity with latency display
-- **Inheritance Visualization** - See which properties are inherited from parent profiles
-![Dashboard](<resources/ZCI-errors across profile layers.png>)
+- Issues overview - clickable errors and warnings that jump to the exact location
+- Profile cards - all your configured profiles with connection test buttons
+- Connection testing - test SSH and z/OSMF connectivity
+
+![Dashboard](resources/ZCI-errors%20across%20profile%20layers.png)
 
 **Environment Tab:**
-- System status: Node.js, Zowe CLI (with Update button), ZOWE_CLI_HOME, Credential Manager, SSH Keys
-- Zowe environment variables - view set variables, add new ones from curated list
+- System status: Node.js, Zowe CLI (with Update button), Credential Manager, SSH Keys
+- Zowe environment variables - view and add from curated list
 - Installed Zowe-related VS Code extensions (with Update buttons)
-![Environment Tab](<resources/ZCI-env tab.png>)
+
+![Environment Tab](resources/ZCI-env%20tab.png)
 
 **Credentials Tab:**
 - View all SSH keys in `~/.ssh`
-- Check credential manager status (Windows/macOS/Linux)
-- Copy public keys to clipboard
-- Generate new SSH keys (Ed25519, RSA, ECDSA)
-![Credentials Tab](<resources/ZCI-creds tab.png>)
+- Credential manager status
+- Generate new SSH keys
+
+![Credentials Tab](resources/ZCI-creds%20tab.png)
 
 **Layers Tab:**
 - All configuration files (global, project, user) with priority ordering
 - Which profiles are defined where
-- Override detection - see which layer "wins" when there are conflicts
-![Layers Tab](<resources/ZCI-layers tab.png>)
+
+![Layers Tab](resources/ZCI-layers%20tab.png)
 
 ## Installation
 
-### From VS Code Marketplace
+1. Go to the [Releases](https://github.com/ATorrise/zowe-config-inspector/releases) page
+2. Download the latest `.vsix` file (e.g., `zowe-config-inspector-0.1.0.vsix`)
+3. Install in VS Code using one of these methods:
 
-1. Open VS Code
-2. Go to Extensions (`Ctrl+Shift+X`)
-3. Search for "Zowe Config Inspector"
-4. Click Install
-
-### From VSIX File
-
+**Option A: Command Line**
 ```bash
 code --install-extension zowe-config-inspector-0.1.0.vsix
 ```
 
+**Option B: VS Code UI**
+1. Open VS Code
+2. Go to Extensions (`Ctrl+Shift+X` / `Cmd+Shift+X`)
+3. Click the `...` menu (top-right of Extensions panel)
+4. Select "Install from VSIX..."
+5. Browse to the downloaded `.vsix` file and select it
+
 ## Usage
 
 The extension activates automatically when you:
+
 - Open a workspace containing `zowe.config.json`
 - Open any `zowe.config.json` or `zowe.config.user.json` file
 
@@ -70,9 +73,11 @@ The extension activates automatically when you:
 
 Open the Command Palette (`Ctrl+Shift+P`) and search for:
 
-| Command | Description |
-|---------|-------------|
+
+| Command                          | Description                             |
+| -------------------------------- | --------------------------------------- |
 | `Zowe Inspector: Open Dashboard` | Open comprehensive diagnostic dashboard |
+
 
 All other features (validation, environment check, credentials, SSH key generation, CLI update) are accessible from within the Dashboard tabs.
 
@@ -80,7 +85,7 @@ All other features (validation, environment check, credentials, SSH key generati
 
 Right-click on any `zowe.config.json` file in the file explorer or an open tab to open the Dashboard.
 
-Right-click on a profile/session node in Zowe Explorer's Data Sets, USS, or Jobs tree to select "Inspect Profile" (not available on favorites).
+Right-click on a profile/session node in Zowe Explorer's Data Sets, USS, or Jobs tree to select "Inspect Profile."
 
 ### Settings
 
@@ -96,13 +101,15 @@ Configure the extension via VS Code settings:
 }
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `enableRealTimeValidation` | `true` | Validate as you type |
-| `validateOnSave` | `true` | Full validation on save |
-| `showInfoDiagnostics` | `false` | Show informational hints |
-| `checkSshKeyExists` | `true` | Verify SSH private key files exist |
-| `autoCheckOnStartup` | `false` | Run environment check when VS Code starts |
+
+| Setting                    | Default | Description                               |
+| -------------------------- | ------- | ----------------------------------------- |
+| `enableRealTimeValidation` | `true`  | Validate as you type                      |
+| `validateOnSave`           | `true`  | Full validation on save                   |
+| `showInfoDiagnostics`      | `false` | Show informational hints                  |
+| `checkSshKeyExists`        | `true`  | Verify SSH private key files exist        |
+| `autoCheckOnStartup`       | `false` | Run environment check when VS Code starts |
+
 
 ## What It Catches
 
@@ -134,6 +141,7 @@ These are hidden by default. To enable, add this to your VS Code settings:
 ```
 
 Info diagnostics include:
+
 - Both password and privateKey set (dual authentication)
 - Localhost as mainframe host
 - No profiles defined
@@ -215,3 +223,4 @@ This project is licensed under the Eclipse Public License 2.0 - see the [LICENSE
 
 - [Zowe](https://www.zowe.org/) - The open source project for z/OS
 - [Zowe Explorer](https://github.com/zowe/zowe-explorer-vscode) - VS Code extension for Zowe
+
