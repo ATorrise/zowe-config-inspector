@@ -1,6 +1,6 @@
 # Zowe Config Inspector
 
-A diagnostic tool for Zowe CLI - validate configurations, analyze inheritance, check credentials, test connections, and troubleshoot your mainframe development environment.
+A diagnostic tool for Zowe configurations - validate configs, analyze inheritance, check credentials, test connections, and troubleshoot your mainframe development environment.
 
 ## Features
 
@@ -48,19 +48,12 @@ Run `Zowe Inspector: Open Dashboard` from the Command Palette for a comprehensiv
 
 1. Go to the [Releases](https://github.com/ATorrise/zowe-config-inspector/releases) page
 2. Download the latest `.vsix` file (e.g., `zowe-config-inspector-0.1.0.vsix`)
-3. Install in VS Code using one of these methods:
-
-**Option A: Command Line**
-```bash
-code --install-extension zowe-config-inspector-0.1.0.vsix
-```
-
-**Option B: VS Code UI**
-1. Open VS Code
-2. Go to Extensions (`Ctrl+Shift+X` / `Cmd+Shift+X`)
-3. Click the `...` menu (top-right of Extensions panel)
-4. Select "Install from VSIX..."
-5. Browse to the downloaded `.vsix` file and select it
+3. Install in VS Code:
+- Open VS Code
+- Go to Extensions (`Ctrl+Shift+X` / `Cmd+Shift+X`)
+- Click the `...` menu (top-right of Extensions panel)
+- Select "Install from VSIX..."
+- Browse to the downloaded `.vsix` file and select it
 
 ## Usage
 
@@ -128,7 +121,6 @@ Configure the extension via VS Code settings:
 - TLS verification disabled (`rejectUnauthorized: false`)
 - Empty profiles with no configuration
 - Secure properties stored in plaintext
-- UTF-8 BOM detected
 
 ### Info (Blue Squiggles)
 
