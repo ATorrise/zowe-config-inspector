@@ -1,6 +1,6 @@
 # Zowe Config Inspector
 
-A diagnostic tool for Zowe configurations - validate configs, analyze inheritance, check credentials, test connections, and troubleshoot your mainframe development environment.
+A diagnostic tool for Zowe client configurations - validate configs, analyze inheritance, check credentials, test connections, and troubleshoot your mainframe development environment.
 
 ## Features
 
