@@ -103,22 +103,9 @@ export class ZoweConfigDiagnosticsProvider {
   }
 
   private shouldValidate(document: vscode.TextDocument): boolean {
-    // Check if it's a Zowe config file by name first
-    const isZoweFile = isZoweConfigFile(document.uri.fsPath);
-    
-    if (!isZoweFile) {
-      return false;
-    }
-    
-    // Accept json, jsonc, or even plaintext (in case language isn't detected)
+    if (!isZoweConfigFile(document.uri.fsPath)) return false;
     const validLanguages = ["json", "jsonc", "plaintext"];
-    if (!validLanguages.includes(document.languageId)) {
-      console.log(`Zowe Config Inspector: Skipping ${document.uri.fsPath} - language is ${document.languageId}`);
-      return false;
-    }
-
-    console.log(`Zowe Config Inspector: Validating ${document.uri.fsPath}`);
-    return true;
+    return validLanguages.includes(document.languageId);
   }
 
   private issuesToDiagnostics(

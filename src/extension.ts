@@ -10,48 +10,40 @@ import * as vscode from "vscode";
 import { showDashboard, showDashboardForProfile, disposeTerminal } from "./commands/dashboard.js";
 import { ZoweConfigDiagnosticsProvider } from "./providers/diagnostics-provider.js";
 import { StatusBarProvider } from "./providers/status-bar-provider.js";
+import { logger } from "./utils/logger.js";
 
 let diagnosticsProvider: ZoweConfigDiagnosticsProvider;
 let statusBarProvider: StatusBarProvider;
 
 export function activate(context: vscode.ExtensionContext): void {
-  console.log("Zowe Config Inspector is now active");
+  logger.log("Extension activated");
 
-  // Initialize diagnostics provider (real-time validation)
   diagnosticsProvider = new ZoweConfigDiagnosticsProvider();
   diagnosticsProvider.activate(context);
 
-  // Initialize status bar
   statusBarProvider = new StatusBarProvider();
   statusBarProvider.activate(context);
 
-  // Main command - opens the dashboard
   context.subscriptions.push(
     vscode.commands.registerCommand("zoweInspector.showDashboard", () => showDashboard())
   );
 
-  // Command for Zowe Explorer tree view context menu
   context.subscriptions.push(
     vscode.commands.registerCommand("zoweInspector.validateProfile", async (node: unknown) => {
       try {
-        // Extract profile name from the Zowe Explorer tree node
         const profileName = getProfileNameFromNode(node);
-        console.log("Zowe Inspector: validateProfile called with node:", node, "extracted name:", profileName);
-        
         if (profileName) {
           await showDashboardForProfile(profileName);
         } else {
-          // Fallback to showing the dashboard without a specific profile
           await showDashboard();
         }
       } catch (error) {
-        console.error("Zowe Inspector: Error in validateProfile:", error);
+        logger.error("validateProfile failed:", error);
         vscode.window.showErrorMessage(`Failed to inspect profile: ${error instanceof Error ? error.message : String(error)}`);
       }
     })
   );
 
-  // Cleanup on deactivation - include terminal disposal in subscriptions
   context.subscriptions.push({
     dispose: () => {
       diagnosticsProvider.dispose();
@@ -62,62 +54,36 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // Dispose all resources
-  if (diagnosticsProvider) {
-    diagnosticsProvider.dispose();
-  }
-  if (statusBarProvider) {
-    statusBarProvider.dispose();
-  }
-  // Clean up any terminal created by the extension
+  diagnosticsProvider?.dispose();
+  statusBarProvider?.dispose();
   disposeTerminal();
 }
 
-/**
- * Extract profile name from a Zowe Explorer tree node.
- * Zowe Explorer nodes typically have a `label` or `profile` property.
- */
 function getProfileNameFromNode(node: unknown): string | null {
-  if (!node || typeof node !== "object") {
-    return null;
+  if (!node || typeof node !== "object") return null;
+
+  const n = node as Record<string, unknown>;
+
+  if (typeof n.label === "string") return n.label;
+
+  if (n.label && typeof n.label === "object") {
+    const labelObj = n.label as Record<string, unknown>;
+    if (typeof labelObj.label === "string") return labelObj.label;
   }
 
-  const nodeObj = node as Record<string, unknown>;
-
-  // Try common Zowe Explorer node properties
-  // The node structure varies but usually has label or profile.name
-  if (typeof nodeObj.label === "string") {
-    return nodeObj.label;
+  if (n.profile && typeof n.profile === "object") {
+    const profile = n.profile as Record<string, unknown>;
+    if (typeof profile.name === "string") return profile.name;
   }
 
-  if (nodeObj.label && typeof nodeObj.label === "object") {
-    const labelObj = nodeObj.label as Record<string, unknown>;
-    if (typeof labelObj.label === "string") {
-      return labelObj.label;
-    }
+  if (typeof n.getLabel === "function") {
+    const label = (n.getLabel as () => unknown)();
+    if (typeof label === "string") return label;
   }
 
-  if (nodeObj.profile && typeof nodeObj.profile === "object") {
-    const profile = nodeObj.profile as Record<string, unknown>;
-    if (typeof profile.name === "string") {
-      return profile.name;
-    }
-  }
-
-  // Try getLabel() method if it exists
-  if (typeof nodeObj.getLabel === "function") {
-    const label = (nodeObj.getLabel as () => unknown)();
-    if (typeof label === "string") {
-      return label;
-    }
-  }
-
-  // Try getProfileName() method
-  if (typeof nodeObj.getProfileName === "function") {
-    const name = (nodeObj.getProfileName as () => unknown)();
-    if (typeof name === "string") {
-      return name;
-    }
+  if (typeof n.getProfileName === "function") {
+    const name = (n.getProfileName as () => unknown)();
+    if (typeof name === "string") return name;
   }
 
   return null;

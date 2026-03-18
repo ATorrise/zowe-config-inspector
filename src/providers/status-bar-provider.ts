@@ -26,14 +26,10 @@ export class StatusBarProvider {
   public activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(this.statusBarItem);
 
-    // Update status bar when active editor changes
     context.subscriptions.push(
-      vscode.window.onDidChangeActiveTextEditor((editor) => {
-        this.updateStatusBar(editor);
-      })
+      vscode.window.onDidChangeActiveTextEditor((editor) => this.updateStatusBar(editor))
     );
 
-    // Update status bar when diagnostics change
     context.subscriptions.push(
       vscode.languages.onDidChangeDiagnostics((event) => {
         const editor = vscode.window.activeTextEditor;
@@ -43,7 +39,6 @@ export class StatusBarProvider {
       })
     );
 
-    // Initial update
     this.updateStatusBar(vscode.window.activeTextEditor);
   }
 

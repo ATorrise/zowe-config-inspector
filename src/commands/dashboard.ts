@@ -13,85 +13,53 @@ import * as vscode from "vscode";
 import type { ConfigLayer, ExtensionSettings, ZoweConfigProfile } from "../types.js";
 import { findConfigLayers, loadConfigFile } from "../utils/config-finder.js";
 import { getAllEnvironmentChecks, type EnvironmentCheck } from "../utils/environment-checks.js";
+import { logger } from "../utils/logger.js";
 import { validateDocument } from "../validators/document-validator.js";
 
 let dashboardPanel: vscode.WebviewPanel | undefined;
 
-// ============== Terminal Management ==============
-// Reuse a single terminal for all operations to avoid spawning many processes
 let inspectorTerminal: vscode.Terminal | undefined;
 let terminalCloseListener: vscode.Disposable | undefined;
 
-/**
- * Get or create the inspector terminal. Reuses existing terminal if available.
- */
 function getOrCreateTerminal(): vscode.Terminal {
-  // Check if our terminal still exists
-  if (inspectorTerminal) {
-    // Verify it's still in the list of open terminals
-    const stillExists = vscode.window.terminals.includes(inspectorTerminal);
-    if (stillExists) {
-      return inspectorTerminal;
-    }
-    // Terminal was closed, clear reference
-    inspectorTerminal = undefined;
+  if (inspectorTerminal && vscode.window.terminals.includes(inspectorTerminal)) {
+    return inspectorTerminal;
   }
-  
-  // Create new terminal
+  inspectorTerminal = undefined;
   inspectorTerminal = vscode.window.createTerminal("Zowe Inspector");
-  
-  // Listen for terminal close to clean up reference
+
   if (!terminalCloseListener) {
-    terminalCloseListener = vscode.window.onDidCloseTerminal((closedTerminal) => {
-      if (closedTerminal === inspectorTerminal) {
-        inspectorTerminal = undefined;
-      }
+    terminalCloseListener = vscode.window.onDidCloseTerminal((t) => {
+      if (t === inspectorTerminal) inspectorTerminal = undefined;
     });
   }
-  
   return inspectorTerminal;
 }
 
-/**
- * Dispose of the inspector terminal if it exists.
- * Call this when the extension is deactivated or dashboard is closed.
- */
 export function disposeTerminal(): void {
-  if (inspectorTerminal) {
-    inspectorTerminal.dispose();
-    inspectorTerminal = undefined;
-  }
-  if (terminalCloseListener) {
-    terminalCloseListener.dispose();
-    terminalCloseListener = undefined;
-  }
+  inspectorTerminal?.dispose();
+  inspectorTerminal = undefined;
+  terminalCloseListener?.dispose();
+  terminalCloseListener = undefined;
 }
 
-// Connection test results storage
-const connectionResults = new Map<string, { 
-  status: "testing" | "success" | "failed" | "pending"; 
-  message: string; 
+const connectionResults = new Map<string, {
+  status: "testing" | "success" | "failed" | "pending";
+  message: string;
   latency?: number;
-  timestamp: number 
+  timestamp: number
 }>();
 
-// Store the profile to highlight when dashboard opens
 let highlightProfileName: string | null = null;
-
-// Current active tab
 let activeTab = "dashboard";
-
-// Throttle updates to improve performance
 let updatePending = false;
 let lastUpdateTime = 0;
 const UPDATE_THROTTLE_MS = 500;
 
-// Cache for extensions list (refresh every 30 seconds)
 let cachedExtensions: Array<{ id: string; name: string; version: string; isActive: boolean }> | null = null;
 let extensionsCacheTime = 0;
 const CACHE_TTL_MS = 30000;
 
-// Zowe environment variables definitions
 const ZOWE_ENV_VARS = [
   { name: "ZOWE_CLI_HOME", description: "Directory for global Zowe CLI configuration files", category: "core" },
   { name: "ZOWE_CLI_PLUGINS_DIR", description: "Directory for CLI plugins", category: "core" },
@@ -112,7 +80,6 @@ interface SshKeyInfo {
   hasPublicKey: boolean;
 }
 
-// Get validation settings from VS Code configuration
 function getValidationSettings(): ExtensionSettings {
   const config = vscode.workspace.getConfiguration("zoweInspector");
   return {
@@ -123,7 +90,6 @@ function getValidationSettings(): ExtensionSettings {
   };
 }
 
-// Convert validation issues to VS Code diagnostics (for dashboard display)
 function issuesToDiagnostics(
   issues: Array<{ message: string; severity: string; code?: string; suggestion?: string; range?: { startLine: number; startChar: number; endLine: number; endChar: number } }>,
   content: string,
@@ -147,10 +113,10 @@ function issuesToDiagnostics(
       range = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, lines[0]?.length || 0));
     }
 
-    const severity = issue.severity === "error" 
-      ? vscode.DiagnosticSeverity.Error 
-      : issue.severity === "warning" 
-        ? vscode.DiagnosticSeverity.Warning 
+    const severity = issue.severity === "error"
+      ? vscode.DiagnosticSeverity.Error
+      : issue.severity === "warning"
+        ? vscode.DiagnosticSeverity.Warning
         : vscode.DiagnosticSeverity.Information;
 
     const message = issue.message;
@@ -192,7 +158,7 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
     "zoweInspectorDashboard",
     "Zowe Config Inspector",
     vscode.ViewColumn.Two,
-    { 
+    {
       enableScripts: true,
       retainContextWhenHidden: true
     }
@@ -200,7 +166,6 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
 
   dashboardPanel.onDidDispose(() => {
     dashboardPanel = undefined;
-    // Dispose terminal when dashboard closes to free up resources
     disposeTerminal();
   });
 
@@ -208,57 +173,49 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
     switch (message.command) {
       case "switchTab":
         activeTab = message.tab;
-        if (dashboardPanel) {
-          updateDashboardContent(dashboardPanel, workspaceFolder, true); // Force update on tab switch
-        }
+        if (dashboardPanel) updateDashboardContent(dashboardPanel, workspaceFolder, true);
         break;
-        
-      case "openFile":
+
+      case "openFile": {
         const doc = await vscode.workspace.openTextDocument(message.file);
         const editor = await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-        const position = new vscode.Position(message.line, message.character);
-        editor.selection = new vscode.Selection(position, position);
-        editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+        const pos = new vscode.Position(message.line, message.character);
+        editor.selection = new vscode.Selection(pos, pos);
+        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
         break;
-      
+      }
+
       case "testConnection":
         await testProfileConnection(message.profileName, message.profileType, workspaceFolder, message.withAuth || false);
         break;
-      
+
       case "openProfile":
         await openProfileInEditor(message.file, message.profileName);
         break;
-      
+
       case "refresh":
-        // Clear cache and force full refresh
         cachedExtensions = null;
         extensionsCacheTime = 0;
-        if (dashboardPanel) {
-          updateDashboardContent(dashboardPanel, workspaceFolder, true);
-        }
+        if (dashboardPanel) updateDashboardContent(dashboardPanel, workspaceFolder, true);
         break;
-        
-      case "openTerminal":
-        const openTerm = getOrCreateTerminal();
-        openTerm.show();
-        if (message.cmd) {
-          openTerm.sendText(message.cmd);
-        }
+
+      case "openTerminal": {
+        const t = getOrCreateTerminal();
+        t.show();
+        if (message.cmd) t.sendText(message.cmd);
         break;
-      
+      }
+
       case "runCommand":
         if (message.cmd.startsWith("ext install ")) {
-          const extId = message.cmd.replace("ext install ", "");
-          vscode.commands.executeCommand("workbench.extensions.installExtension", extId);
+          vscode.commands.executeCommand("workbench.extensions.installExtension", message.cmd.replace("ext install ", ""));
         } else {
-          // Show command in terminal instead of executing directly
-          const cmdTerm = getOrCreateTerminal();
-          cmdTerm.show();
-          cmdTerm.sendText(message.cmd);
+          const t = getOrCreateTerminal();
+          t.show();
+          t.sendText(message.cmd);
         }
         break;
-        
-      // Environment tab actions
+
       case "updateCli":
         await updateZoweCli();
         break;
@@ -288,7 +245,7 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
           updateDashboardContent(dashboardPanel, workspaceFolder, true);
         }
         break;
-        
+
       // Credentials tab actions
       case "generateSshKey":
         await generateSshKey();
@@ -305,7 +262,7 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
       case "copyPublicKey":
         await copyPublicKeyToClipboard(message.keyPath);
         break;
-        
+
       // Layers tab actions
       case "createConfig":
         await createConfigFile(message.path);
@@ -329,26 +286,26 @@ async function showDashboardInternal(profileToHighlight: string | null): Promise
   });
 }
 
-// ============== Dashboard Tab Helpers ==============
+// Dashboard Tab Helpers
 
 async function openProfileInEditor(filePath: string, profileName: string): Promise<void> {
   try {
     const doc = await vscode.workspace.openTextDocument(filePath);
     const editor = await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-    
+
     const text = doc.getText();
     const lines = text.split('\n');
     const profileParts = profileName.split('.');
     const lastPart = profileParts[profileParts.length - 1];
     const searchPattern = new RegExp(`"${lastPart}"\\s*:\\s*\\{`);
-    
+
     let targetLine = 0;
     let inCorrectParent = profileParts.length === 1;
     let parentDepth = 0;
-    
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      
+
       if (profileParts.length > 1) {
         for (let p = 0; p < profileParts.length - 1; p++) {
           const parentPattern = new RegExp(`"${profileParts[p]}"\\s*:\\s*\\{`);
@@ -360,18 +317,18 @@ async function openProfileInEditor(filePath: string, profileName: string): Promi
           }
         }
       }
-      
+
       if (searchPattern.test(line) && inCorrectParent) {
         targetLine = i;
         break;
       }
     }
-    
+
     const position = new vscode.Position(targetLine, 0);
     editor.selection = new vscode.Selection(position, position);
     editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
   } catch (error) {
-    console.error(`Failed to open profile ${profileName} in ${filePath}:`, error);
+    logger.error(`Failed to open profile ${profileName} in ${filePath}:`, error);
     vscode.window.showErrorMessage(`Could not open profile: ${profileName}`);
   }
 }
@@ -414,22 +371,13 @@ async function openAllActiveConfigFiles(workspaceFolder: string): Promise<void> 
     return;
   }
 
-  // Open all existing config files (in background) so diagnostics provider can validate them
   const openDocs = new Set(vscode.workspace.textDocuments.map(d => d.uri.fsPath));
-  
   for (const layer of existingLayers) {
-    if (openDocs.has(layer.path)) {
-      continue; // Already open
-    }
+    if (openDocs.has(layer.path)) continue;
     try {
-      // Just open the document - don't show it in editor (preservesFocus doesn't matter here)
       await vscode.workspace.openTextDocument(layer.path);
-    } catch (error) {
-      console.error(`Failed to open ${layer.path}:`, error);
-    }
+    } catch { /* ignore */ }
   }
-
-  // Small delay to let diagnostics provider process the newly opened files
   await new Promise(resolve => setTimeout(resolve, 300));
 }
 
@@ -454,10 +402,10 @@ async function testProfileConnection(profileName: string, profileType: string, w
   }
 
   if (!profileProps || !profileProps.host) {
-    connectionResults.set(profileName, { 
-      status: "failed", 
-      message: "No host configured", 
-      timestamp: Date.now() 
+    connectionResults.set(profileName, {
+      status: "failed",
+      message: "No host configured",
+      timestamp: Date.now()
     });
     updateDashboardContent(dashboardPanel, workspaceFolder);
     return;
@@ -471,17 +419,17 @@ async function testProfileConnection(profileName: string, profileType: string, w
     } else if (profileType === "zftp") {
       await testFtpConnection(profileName, profileProps, withAuth);
     } else {
-      connectionResults.set(profileName, { 
-        status: "failed", 
-        message: `Connection test not supported for type: ${profileType}`, 
-        timestamp: Date.now() 
+      connectionResults.set(profileName, {
+        status: "failed",
+        message: `Connection test not supported for type: ${profileType}`,
+        timestamp: Date.now()
       });
     }
   } catch (error) {
-    connectionResults.set(profileName, { 
-      status: "failed", 
-      message: `Error: ${error instanceof Error ? error.message : String(error)}`, 
-      timestamp: Date.now() 
+    connectionResults.set(profileName, {
+      status: "failed",
+      message: `Error: ${error instanceof Error ? error.message : String(error)}`,
+      timestamp: Date.now()
     });
   }
 
@@ -495,11 +443,9 @@ async function testSshConnection(profileName: string, props: Record<string, unkn
   const port = Number(props.port) || 22;
   const startTime = Date.now();
 
-  // Only do basic connectivity test (no process spawning)
-  // Auth tests would require spawning ssh which can leave orphan processes
   try {
     const net = await import("node:net");
-    
+
     await new Promise<void>((resolve, reject) => {
       const socket = new net.Socket();
       const timeout = setTimeout(() => { socket.destroy(); reject(new Error("Connection timed out (5s)")); }, 5000);
@@ -511,10 +457,10 @@ async function testSshConnection(profileName: string, props: Record<string, unkn
     const latency = Date.now() - startTime;
     connectionResults.set(profileName, { status: "success", message: `SSH port ${port} reachable`, latency, timestamp: Date.now() });
   } catch (error) {
-    connectionResults.set(profileName, { 
-      status: "failed", 
-      message: `Cannot reach ${host}:${port} - ${error instanceof Error ? error.message : "Unknown error"}`, 
-      timestamp: Date.now() 
+    connectionResults.set(profileName, {
+      status: "failed",
+      message: `Cannot reach ${host}:${port} - ${error instanceof Error ? error.message : "Unknown error"}`,
+      timestamp: Date.now()
     });
   }
 }
@@ -526,8 +472,6 @@ async function testZosmfConnection(profileName: string, props: Record<string, un
   const basePath = String(props.basePath || "/zosmf");
   const rejectUnauthorized = props.rejectUnauthorized !== false;
   const startTime = Date.now();
-
-  // Only do basic HTTP connectivity test (no process spawning)
   const url = `${protocol}://${host}:${port}${basePath}/info`;
 
   try {
@@ -537,7 +481,7 @@ async function testZosmfConnection(profileName: string, props: Record<string, un
 
     await new Promise<void>((resolve, reject) => {
       const req = client.request(url, { method: "GET", timeout: 10000, rejectUnauthorized }, (res) => {
-        res.resume(); // Consume response to free up memory
+        res.resume();
         if (res.statusCode && res.statusCode < 500) resolve();
         else reject(new Error(`HTTP ${res.statusCode}`));
       });
@@ -565,14 +509,14 @@ async function testFtpConnection(profileName: string, props: Record<string, unkn
       connectionResults.set(profileName, { status: "failed", message: "No user configured for auth test", timestamp: Date.now() });
       return;
     }
-    
+
     connectionResults.set(profileName, { status: "failed", message: "FTP auth test requires zFTP plugin", timestamp: Date.now() });
     return;
   }
 
   try {
     const net = await import("node:net");
-    
+
     await new Promise<void>((resolve, reject) => {
       const socket = new net.Socket();
       const timeout = setTimeout(() => { socket.destroy(); reject(new Error("Connection timed out (5s)")); }, 5000);
@@ -583,10 +527,10 @@ async function testFtpConnection(profileName: string, props: Record<string, unkn
     const latency = Date.now() - startTime;
     connectionResults.set(profileName, { status: "success", message: `FTP port ${port} reachable`, latency, timestamp: Date.now() });
   } catch (error) {
-    connectionResults.set(profileName, { 
-      status: "failed", 
-      message: `Cannot reach ${host}:${port} - ${error instanceof Error ? error.message : "Unknown error"}`, 
-      timestamp: Date.now() 
+    connectionResults.set(profileName, {
+      status: "failed",
+      message: `Cannot reach ${host}:${port} - ${error instanceof Error ? error.message : "Unknown error"}`,
+      timestamp: Date.now()
     });
   }
 }
@@ -594,7 +538,7 @@ async function testFtpConnection(profileName: string, props: Record<string, unkn
 function findProfile(profiles: Record<string, ZoweConfigProfile>, name: string): ZoweConfigProfile | null {
   const parts = name.split(".");
   let current: Record<string, ZoweConfigProfile> = profiles;
-  
+
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     if (!current[part]) return null;
@@ -608,28 +552,28 @@ function findProfile(profiles: Record<string, ZoweConfigProfile>, name: string):
 function getInheritedProperties(profiles: Record<string, ZoweConfigProfile>, profileName: string): Record<string, { value: unknown; from: string }> {
   const inherited: Record<string, { value: unknown; from: string }> = {};
   const parts = profileName.split(".");
-  
+
   let current: Record<string, ZoweConfigProfile> = profiles;
   let currentPath = "";
-  
+
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i];
     currentPath = currentPath ? `${currentPath}.${part}` : part;
-    
+
     if (current[part]?.properties) {
       for (const [key, value] of Object.entries(current[part].properties!)) {
         inherited[key] = { value, from: currentPath };
       }
     }
-    
+
     if (current[part]?.profiles) current = current[part].profiles!;
     else break;
   }
-  
+
   return inherited;
 }
 
-// ============== Environment Tab Helpers ==============
+// Environment Tab Helpers
 
 async function updateZoweCli(): Promise<void> {
   const choice = await vscode.window.showInformationMessage(
@@ -724,7 +668,7 @@ async function copyEnvExportCommand(name: string, value: string): Promise<void> 
 
 async function editEnvironmentVariable(name: string, currentValue: string): Promise<void> {
   const envVar = ZOWE_ENV_VARS.find(v => v.name === name);
-  
+
   const newValue = await vscode.window.showInputBox({
     prompt: `Edit value for ${name}`,
     placeHolder: envVar?.description || "Enter new value",
@@ -796,7 +740,7 @@ function getZoweEnvVars(): Array<{ name: string; value: string | undefined; desc
   return ZOWE_ENV_VARS.map(v => ({ ...v, value: process.env[v.name] }));
 }
 
-// ============== Credentials Tab Helpers ==============
+// Credentials Tab Helpers
 
 async function generateSshKey(): Promise<void> {
   const keyTypes = [
@@ -867,7 +811,7 @@ function getSshKeyInfo(): SshKeyInfo[] {
 
   try {
     const files = readdirSync(sshDir);
-    const keyFiles = files.filter(f => 
+    const keyFiles = files.filter(f =>
       !f.endsWith(".pub") && !f.includes("known_hosts") && !f.includes("config") && !f.includes("authorized_keys")
     );
 
@@ -902,41 +846,41 @@ function getCredentialManagerInfo(): { name: string; status: string; details: st
   }
 }
 
-// ============== Layers Tab Helpers ==============
+// Layers Tab Helpers
 
 async function createConfigFile(filePath: string): Promise<void> {
   const { dirname } = await import("node:path");
   const { mkdirSync, writeFileSync } = await import("node:fs");
-  
+
   const isUserConfig = filePath.includes(".user.json");
   const template = isUserConfig
     ? {
-        $schema: "./zowe.schema.json",
-        profiles: {},
-        defaults: {}
-      }
+      $schema: "./zowe.schema.json",
+      profiles: {},
+      defaults: {}
+    }
     : {
-        $schema: "./zowe.schema.json",
-        profiles: {
-          example: {
-            type: "zosmf",
-            properties: {
-              host: "your.mainframe.com",
-              port: 443
-            },
-            secure: ["user", "password"]
-          }
-        },
-        defaults: {
-          zosmf: "example"
+      $schema: "./zowe.schema.json",
+      profiles: {
+        example: {
+          type: "zosmf",
+          properties: {
+            host: "your.mainframe.com",
+            port: 443
+          },
+          secure: ["user", "password"]
         }
-      };
-  
+      },
+      defaults: {
+        zosmf: "example"
+      }
+    };
+
   try {
     const dir = dirname(filePath);
     mkdirSync(dir, { recursive: true });
     writeFileSync(filePath, JSON.stringify(template, null, 2), "utf-8");
-    
+
     const doc = await vscode.workspace.openTextDocument(filePath);
     await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
     vscode.window.showInformationMessage(`Created ${filePath}`);
@@ -945,19 +889,14 @@ async function createConfigFile(filePath: string): Promise<void> {
   }
 }
 
-// ============== Main Content Update ==============
-
 function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: string, force = false): void {
-  // Throttle updates unless forced
   const now = Date.now();
   if (!force && now - lastUpdateTime < UPDATE_THROTTLE_MS) {
     if (!updatePending) {
       updatePending = true;
       setTimeout(() => {
         updatePending = false;
-        if (dashboardPanel) {
-          updateDashboardContent(dashboardPanel, workspaceFolder, true);
-        }
+        if (dashboardPanel) updateDashboardContent(dashboardPanel, workspaceFolder, true);
       }, UPDATE_THROTTLE_MS);
     }
     return;
@@ -966,28 +905,21 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
 
   const layers = findConfigLayers(workspaceFolder);
   const existingLayers = layers.filter(l => l.exists);
-  
-  // Always collect diagnostics and profiles (needed for status bar)
-  const allDiagnostics: Array<{file: string; diagnostics: vscode.Diagnostic[]}> = [];
+  const allDiagnostics: Array<{ file: string; diagnostics: vscode.Diagnostic[] }> = [];
   const allProfiles: Array<{
     name: string; type: string; source: string;
     properties: Record<string, unknown>;
     inherited: Record<string, { value: unknown; from: string }>;
   }> = [];
-  
-  // Validate all existing config files directly (don't rely on VS Code diagnostics which clear when files close)
+
   const settings = getValidationSettings();
   for (const layer of existingLayers) {
     try {
       const content = readFileSync(layer.path, "utf-8");
       const issues = validateDocument(content, layer.path, settings);
       const diagnostics = issuesToDiagnostics(issues, content, settings);
-      if (diagnostics.length > 0) {
-        allDiagnostics.push({ file: layer.path, diagnostics });
-      }
-    } catch (error) {
-      console.error(`Failed to validate ${layer.path}:`, error);
-    }
+      if (diagnostics.length > 0) allDiagnostics.push({ file: layer.path, diagnostics });
+    } catch { /* ignore */ }
   }
 
   for (const layer of existingLayers) {
@@ -1000,30 +932,21 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
   const totalErrors = allDiagnostics.reduce((sum, d) => sum + d.diagnostics.filter(x => x.severity === vscode.DiagnosticSeverity.Error).length, 0);
   const totalWarnings = allDiagnostics.reduce((sum, d) => sum + d.diagnostics.filter(x => x.severity === vscode.DiagnosticSeverity.Warning).length, 0);
 
-  // Lazy load expensive data only when needed for active tab
   let envChecks: EnvironmentCheck[] = [];
   let extensions: Array<{ id: string; name: string; version: string; isActive: boolean }> = [];
   let zoweEnvVars: Array<{ name: string; value: string | undefined; description: string; category: string }> = [];
   let sshKeys: SshKeyInfo[] = [];
   let credentialManager = { name: "", status: "", details: "" };
 
-  // Only load data needed for the current tab
   if (activeTab === "environment" || activeTab === "dashboard") {
     envChecks = getAllEnvironmentChecks();
   }
-  
   if (activeTab === "environment") {
-    // Use cached extensions list if available
-    if (cachedExtensions && now - extensionsCacheTime < CACHE_TTL_MS) {
-      extensions = cachedExtensions;
-    } else {
-      extensions = getZoweRelatedExtensions();
-      cachedExtensions = extensions;
-      extensionsCacheTime = now;
-    }
+    extensions = (cachedExtensions && now - extensionsCacheTime < CACHE_TTL_MS)
+      ? cachedExtensions
+      : (cachedExtensions = getZoweRelatedExtensions(), extensionsCacheTime = now, cachedExtensions);
     zoweEnvVars = getZoweEnvVars();
   }
-  
   if (activeTab === "credentials") {
     sshKeys = getSshKeyInfo();
     credentialManager = getCredentialManagerInfo();
@@ -1045,13 +968,13 @@ function updateDashboardContent(panel: vscode.WebviewPanel, workspaceFolder: str
     credentialManager,
     allLayers: layers,
   });
-  
+
   highlightProfileName = null;
 }
 
 function collectProfiles(
-  profiles: Record<string, ZoweConfigProfile>, 
-  prefix: string, 
+  profiles: Record<string, ZoweConfigProfile>,
+  prefix: string,
   source: string,
   rootProfiles: Record<string, ZoweConfigProfile>,
   result: Array<{ name: string; type: string; source: string; properties: Record<string, unknown>; inherited: Record<string, { value: unknown; from: string }>; }>
@@ -1060,7 +983,7 @@ function collectProfiles(
     const fullName = prefix ? `${prefix}.${name}` : name;
     if (profile.type) {
       if (!result.some(p => p.name === fullName)) {
-        result.push({ 
+        result.push({
           name: fullName, type: profile.type, source,
           properties: profile.properties || {},
           inherited: getInheritedProperties(rootProfiles, fullName),
@@ -1073,12 +996,12 @@ function collectProfiles(
   }
 }
 
-// ============== HTML Generation ==============
+// HTML Generation
 
 interface DashboardData {
   activeTab: string;
   layers: ConfigLayer[];
-  diagnostics: Array<{file: string; diagnostics: vscode.Diagnostic[]}>;
+  diagnostics: Array<{ file: string; diagnostics: vscode.Diagnostic[] }>;
   profiles: Array<{ name: string; type: string; source: string; properties: Record<string, unknown>; inherited: Record<string, { value: unknown; from: string }>; }>;
   totalErrors: number;
   totalWarnings: number;
@@ -1094,10 +1017,10 @@ interface DashboardData {
 
 function generateTabbedDashboardHtml(data: DashboardData): string {
   const { activeTab, totalErrors, totalWarnings } = data;
-  
+
   const statusClass = totalErrors > 0 ? "error" : totalWarnings > 0 ? "warning" : "success";
   const statusIcon = totalErrors > 0 ? "❌" : totalWarnings > 0 ? "⚠️" : "✅";
-  const statusText = totalErrors > 0 
+  const statusText = totalErrors > 0
     ? `${totalErrors} Error(s), ${totalWarnings} Warning(s)`
     : totalWarnings > 0 ? `${totalWarnings} Warning(s)` : "Configuration Valid";
 
@@ -1562,15 +1485,15 @@ function generateTabbedDashboardHtml(data: DashboardData): string {
 
 function generateDashboardTab(data: DashboardData): string {
   const { diagnostics, profiles, connectionResults: connResults, highlightProfileName: highlightProfile } = data;
-  
+
   const totalIssues = diagnostics.reduce((sum, d) => sum + d.diagnostics.length, 0);
 
-  const issuesHtml = diagnostics.length > 0 
-    ? diagnostics.map(({file, diagnostics: diags}) => {
-        const errors = diags.filter(d => d.severity === 0).length;
-        const warnings = diags.filter(d => d.severity !== 0).length;
-        const summary = errors > 0 ? `${errors} error(s)` : `${warnings} warning(s)`;
-        return `
+  const issuesHtml = diagnostics.length > 0
+    ? diagnostics.map(({ file, diagnostics: diags }) => {
+      const errors = diags.filter(d => d.severity === 0).length;
+      const warnings = diags.filter(d => d.severity !== 0).length;
+      const summary = errors > 0 ? `${errors} error(s)` : `${warnings} warning(s)`;
+      return `
         <details class="file-issues-group" open>
           <summary class="file-header">
             <span class="file-icon">${errors > 0 ? '❌' : '⚠️'}</span>
@@ -1588,7 +1511,8 @@ function generateDashboardTab(data: DashboardData): string {
             `).join('')}
           </div>
         </details>
-      `;}).join('')
+      `;
+    }).join('')
     : '<div class="no-items">✅ No issues found</div>';
 
   // Group profiles by source file
@@ -1610,24 +1534,24 @@ function generateDashboardTab(data: DashboardData): string {
 
   const profilesHtml = profiles.length > 0
     ? Array.from(profilesBySource.entries()).map(([source, sourceProfiles]) => {
-        const layerLabel = getLayerLabel(source);
-        const escapedSourcePath = escapeHtml(source.replace(/\\/g, "\\\\"));
-        
-        const profileCards = sourceProfiles.map(p => {
-          const connResult = connResults.get(p.name);
-          const connStatusClass = connResult?.status === "success" ? "conn-success" 
-            : connResult?.status === "failed" ? "conn-failed" 
+      const layerLabel = getLayerLabel(source);
+      const escapedSourcePath = escapeHtml(source.replace(/\\/g, "\\\\"));
+
+      const profileCards = sourceProfiles.map(p => {
+        const connResult = connResults.get(p.name);
+        const connStatusClass = connResult?.status === "success" ? "conn-success"
+          : connResult?.status === "failed" ? "conn-failed"
             : connResult?.status === "testing" ? "conn-testing" : "";
-          
-          const canTest = ["ssh", "zosmf", "tso", "zftp"].includes(p.type);
-          const isHighlighted = highlightProfile && p.name === highlightProfile;
-          const escapedName = escapeHtml(p.name);
-          
-          // Find if this profile inherits from a different config file
-          const inheritedSources = new Set(Object.values(p.inherited).map(v => v.from));
-          const externalInheritance = Array.from(inheritedSources).filter(s => s !== source);
-          
-          return `
+
+        const canTest = ["ssh", "zosmf", "tso", "zftp"].includes(p.type);
+        const isHighlighted = highlightProfile && p.name === highlightProfile;
+        const escapedName = escapeHtml(p.name);
+
+        // Find if this profile inherits from a different config file
+        const inheritedSources = new Set(Object.values(p.inherited).map(v => v.from));
+        const externalInheritance = Array.from(inheritedSources).filter(s => s !== source);
+
+        return `
             <div class="profile-card ${connStatusClass}${isHighlighted ? ' highlighted' : ''}" ${isHighlighted ? 'id="highlighted-profile"' : ''}
                  onclick="openProfile('${escapedSourcePath}', '${escapedName}')">
               <div class="profile-header">
@@ -1652,9 +1576,9 @@ function generateDashboardTab(data: DashboardData): string {
               ` : ''}
             </div>
           `;
-        }).join('');
+      }).join('');
 
-        return `
+      return `
           <details class="source-group" open>
             <summary class="source-header">
               <span class="source-label">${layerLabel}</span>
@@ -1666,7 +1590,7 @@ function generateDashboardTab(data: DashboardData): string {
             </div>
           </details>
         `;
-      }).join('')
+    }).join('')
     : '<div class="no-items">No profiles defined</div>';
 
   const issuesSection = `
@@ -1692,7 +1616,7 @@ function generateEnvironmentTab(data: DashboardData): string {
   const envHtml = envChecks.map(c => {
     const isZoweCli = c.name === "Zowe CLI";
     const hasZoweCli = isZoweCli && c.status === "pass";
-    
+
     return `
     <div class="env-item">
       <span class="env-icon">${c.status === 'pass' ? '✅' : c.status === 'fail' ? '❌' : c.status === 'warn' ? '⚠️' : '❓'}</span>
@@ -1703,7 +1627,8 @@ function generateEnvironmentTab(data: DashboardData): string {
       ${hasZoweCli ? `<button class="copy-btn" onclick="updateCli()">Update</button>` : ''}
       ${isZoweCli && !hasZoweCli ? `<button class="copy-btn" onclick="installCli()">Install</button>` : ''}
     </div>
-  `;}).join('');
+  `;
+  }).join('');
 
   const setVars = zoweEnvVars.filter(v => v.value !== undefined);
   const envVarsHtml = setVars.length > 0

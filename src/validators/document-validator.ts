@@ -270,7 +270,6 @@ function validateProfilesRecursive(
     const fullPath = prefix ? `${prefix}.${name}` : name;
     const jsonPath = `/profiles/${fullPath.replace(/\./g, "/profiles/")}`;
 
-    // Check for empty profiles
     if (!profile.type && !profile.properties && !profile.profiles) {
       const range = findPropertyInLine(content, name);
       issues.push({
@@ -283,7 +282,6 @@ function validateProfilesRecursive(
       });
     }
 
-    // Validate profile name (no whitespace, reasonable characters)
     if (/\s/.test(name)) {
       const range = findPropertyInLine(content, name);
       issues.push({
@@ -296,7 +294,6 @@ function validateProfilesRecursive(
       });
     }
 
-    // Validate secure array format
     if (profile.secure) {
       if (!Array.isArray(profile.secure)) {
         const range = findPropertyInLine(content, "secure");
@@ -309,7 +306,6 @@ function validateProfilesRecursive(
           range: range || undefined,
         });
       } else {
-        // Check for duplicate entries in secure array
         const seen = new Set<string>();
         for (const item of profile.secure) {
           if (typeof item !== "string") {
@@ -344,9 +340,6 @@ function validateProfilesRecursive(
       issues.push(...validateProfileProperties(fullPath, profile, content, filePath, settings));
     }
 
-    // Note: Secure properties are stored in credential manager, NOT in the JSON file.
-    // So it's actually CORRECT for secure properties to NOT be in the properties section.
-    // We only warn if a property is in BOTH secure AND properties (potential exposure risk)
     if (profile.secure && Array.isArray(profile.secure) && profile.properties) {
       for (const secureProp of profile.secure) {
         if (typeof secureProp === "string" && secureProp in profile.properties) {
@@ -425,7 +418,7 @@ function validateProfileProperties(
     }
   }
 
-  // Encoding validation (should be a number for z/OS code pages)
+  // Encoding validation (z/OS code pages are typically numbers)
   if (properties.encoding !== undefined && typeof properties.encoding === "string") {
     const range = findPropertyInLine(content, "encoding");
     issues.push({
@@ -538,19 +531,15 @@ function validateProfileProperties(
     }
   }
 
-  // Only check for unknown properties if we have a known profile type
-  // Custom/extension properties are allowed - we only warn about likely typos
   const knownProperties = getKnownPropertiesForType(profileType);
   if (knownProperties.length > 0) {
     for (const prop of Object.keys(properties)) {
       if (!knownProperties.includes(prop)) {
-        // Check if it looks like a typo of a known property
         const similar = findSimilarProperty(prop, knownProperties);
         if (similar) {
-          // Only warn if it's a likely typo (very similar to a known property)
           const range = findPropertyInLine(content, prop);
           issues.push({
-            severity: "info",  // Downgrade to info since it might be intentional
+            severity: "info",
             code: "POSSIBLE_TYPO",
             message: `Profile "${profileName}": unknown "${prop}" - did you mean "${similar}"?`,
             file: filePath,
@@ -558,7 +547,6 @@ function validateProfileProperties(
             range: range || undefined,
           });
         }
-        // Don't warn about truly unknown properties - they could be from plugins/extensions
       }
     }
   }
@@ -567,32 +555,18 @@ function validateProfileProperties(
 }
 
 function getKnownPropertiesForType(type?: string): string[] {
-  // Common properties that can appear on any profile type
   const common = ["host", "port", "user", "password", "rejectUnauthorized", "tokenType", "tokenValue", "authOrder", "protocol", "basePath"];
-  
   switch (type) {
-    case "ssh":
-      return [...common, "privateKey", "keyPassphrase", "handshakeTimeout"];
-    case "zosmf":
-      return [...common, "certFile", "certKeyFile", "encoding", "responseTimeout"];
-    case "base":
-      return [...common, "encoding"];
-    case "tso":
-      return [...common, "account", "codePage", "logonProcedure", "regionSize", "characterSet", "columns", "rows"];
-    case "zftp":
-      return [...common, "secureFtp", "connectionTimeout", "servername"];
-    case "endevor":
-      return [...common];
-    case "cics":
-      return [...common, "regionName", "cicsPlex"];
-    case "db2":
-      return [...common, "database", "sslFile"];
-    case "mq":
-      return [...common];
-    default:
-      // For unknown profile types (plugins, extensions), don't warn about unknown properties
-      // since we don't know what properties they support
-      return [];
+    case "ssh": return [...common, "privateKey", "keyPassphrase", "handshakeTimeout"];
+    case "zosmf": return [...common, "certFile", "certKeyFile", "encoding", "responseTimeout"];
+    case "base": return [...common, "encoding"];
+    case "tso": return [...common, "account", "codePage", "logonProcedure", "regionSize", "characterSet", "columns", "rows"];
+    case "zftp": return [...common, "secureFtp", "connectionTimeout", "servername"];
+    case "endevor": return [...common];
+    case "cics": return [...common, "regionName", "cicsPlex"];
+    case "db2": return [...common, "database", "sslFile"];
+    case "mq": return [...common];
+    default: return [];
   }
 }
 
